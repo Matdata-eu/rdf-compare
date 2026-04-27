@@ -25,10 +25,7 @@ impl DiffStats {
     }
 }
 
-fn detect_or_override(
-    path: &Path,
-    over: Option<InputFormat>,
-) -> Result<InputFormat> {
+fn detect_or_override(path: &Path, over: Option<InputFormat>) -> Result<InputFormat> {
     match over {
         Some(f) => Ok(f),
         None => crate::cli::detect_format(path),
@@ -60,7 +57,9 @@ impl<W: Write> QuadSink for TrigSink<W> {
             .context("failed to serialize quad to TriG")
     }
     fn finish(self: Box<Self>) -> Result<()> {
-        self.inner.finish().context("failed to finalize TriG output")?;
+        self.inner
+            .finish()
+            .context("failed to finalize TriG output")?;
         Ok(())
     }
 }

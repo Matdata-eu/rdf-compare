@@ -8,8 +8,7 @@ use std::path::Path;
 
 /// Open `path` for reading, transparently decompressing if it ends with `.gz`.
 pub fn open_reader(path: &Path) -> Result<Box<dyn BufRead>> {
-    let file =
-        File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
+    let file = File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
     let is_gz = path
         .file_name()
         .and_then(|s| s.to_str())
@@ -26,8 +25,7 @@ pub fn open_reader(path: &Path) -> Result<Box<dyn BufRead>> {
 
 /// Returns true if subject or object is a blank node.
 fn has_blank_node(t: &Triple) -> bool {
-    matches!(t.subject, NamedOrBlankNode::BlankNode(_))
-        || matches!(t.object, Term::BlankNode(_))
+    matches!(t.subject, NamedOrBlankNode::BlankNode(_)) || matches!(t.object, Term::BlankNode(_))
 }
 
 /// Stream-parse `reader` according to `format`. For each triple (after dropping

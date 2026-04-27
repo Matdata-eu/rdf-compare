@@ -87,8 +87,7 @@ fn collision_basenames_get_disambiguated() {
     // a.nt vs a.nt with auto-derived graph IRIs → suffixed :1 / :2
     let tmp = std::env::temp_dir().join("rdf-compare-collision.nq");
     let _ = std::fs::remove_file(&tmp);
-    let stats =
-        run_diff(&args("a.nt", "a.nt", tmp.clone(), OutputFormat::Nq)).unwrap();
+    let stats = run_diff(&args("a.nt", "a.nt", tmp.clone(), OutputFormat::Nq)).unwrap();
     assert_eq!(stats.a_only, 0);
     assert_eq!(stats.b_only, 0);
 }

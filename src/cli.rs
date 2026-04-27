@@ -104,10 +104,7 @@ mod tests {
     fn detects_basic_extensions() {
         assert_eq!(detect_format(Path::new("a.ttl")).unwrap(), InputFormat::Ttl);
         assert_eq!(detect_format(Path::new("a.nt")).unwrap(), InputFormat::Nt);
-        assert_eq!(
-            detect_format(Path::new("a.rdf")).unwrap(),
-            InputFormat::Rdf
-        );
+        assert_eq!(detect_format(Path::new("a.rdf")).unwrap(), InputFormat::Rdf);
         assert_eq!(
             detect_format(Path::new("a.trig")).unwrap(),
             InputFormat::Trig

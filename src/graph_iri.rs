@@ -59,13 +59,11 @@ pub fn resolve_graph_iris(
     override_b: Option<&str>,
 ) -> Result<(NamedNode, NamedNode)> {
     let a = match override_a {
-        Some(s) => NamedNode::new(s)
-            .with_context(|| format!("invalid --graph-a IRI: {}", s))?,
+        Some(s) => NamedNode::new(s).with_context(|| format!("invalid --graph-a IRI: {}", s))?,
         None => iri_for(&basename_stem(path_a))?,
     };
     let b = match override_b {
-        Some(s) => NamedNode::new(s)
-            .with_context(|| format!("invalid --graph-b IRI: {}", s))?,
+        Some(s) => NamedNode::new(s).with_context(|| format!("invalid --graph-b IRI: {}", s))?,
         None => iri_for(&basename_stem(path_b))?,
     };
 
