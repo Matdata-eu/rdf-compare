@@ -1,0 +1,5 @@
+@prefix ex: <http://example.org/> .
+
+ex:s1 ex:p "v1" .
+ex:s2 ex:p "v2" .
+ex:s3 ex:p "vA" .

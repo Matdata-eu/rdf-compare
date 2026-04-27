@@ -1,0 +1,25 @@
+[package]
+name = "rdf-compare"
+version = "0.1.0"
+edition = "2024"
+description = "Fast CLI to compute the diff of two RDF files as a quad dataset with two named graphs"
+authors = ["Mathias Vanden Auweele <mathias@matdata.eu>"]
+license = "Apache-2.0"
+homepage = "https://github.com/Matdata-eu/rdf-compare"
+repository = "https://github.com/Matdata-eu/rdf-compare"
+categories = ["command-line-utilities", "science::geo"]
+readme = "README.md"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+flate2 = "1"
+oxrdf = "0.3"
+oxrdfxml = "0.2"
+oxttl = "0.2"
+percent-encoding = "2"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
