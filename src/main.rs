@@ -2,16 +2,19 @@ use clap::Parser;
 use rdf_compare::cli::Args;
 use rdf_compare::diff::{DiffStats, run_diff};
 use std::process::ExitCode;
+use std::time::Instant;
 
 fn main() -> ExitCode {
     let args = Args::parse();
     let quiet = args.quiet;
     let ci = args.ci;
 
+    let start = Instant::now();
     match run_diff(&args) {
         Ok(stats) => {
+            let elapsed = start.elapsed();
             if !quiet {
-                print_summary(&args, &stats);
+                print_summary(&args, &stats, elapsed);
             }
             if ci && stats.has_differences() {
                 ExitCode::from(1)
@@ -26,7 +29,7 @@ fn main() -> ExitCode {
     }
 }
 
-fn print_summary(args: &Args, s: &DiffStats) {
+fn print_summary(args: &Args, s: &DiffStats, elapsed: std::time::Duration) {
     eprintln!(
         "A: {}  triples={}  only-in-A={}  skipped-bnodes={}",
         args.file_a.display(),
@@ -42,4 +45,5 @@ fn print_summary(args: &Args, s: &DiffStats) {
         s.b_skipped_bnodes
     );
     eprintln!("common={}", s.common);
+    eprintln!("total-time={:.3}s", elapsed.as_secs_f64());
 }
