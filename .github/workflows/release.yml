@@ -29,7 +29,8 @@ jobs:
       - name: Update version in Cargo.toml
         run: |
           TAG_VERSION=${GITHUB_REF#refs/tags/v}
-          sed -i "s/^version = \".*\"/version = \"$TAG_VERSION\"/" Cargo.toml
+          sed -i.bak "s/^version = \".*\"/version = \"$TAG_VERSION\"/" Cargo.toml
+          rm -f Cargo.toml.bak
 
       - name: Run tests
         run: cargo test
@@ -80,7 +81,8 @@ jobs:
         shell: bash
         run: |
           TAG_VERSION=${GITHUB_REF#refs/tags/v}
-          sed -i "s/^version = \".*\"/version = \"$TAG_VERSION\"/" Cargo.toml
+          sed -i.bak "s/^version = \".*\"/version = \"$TAG_VERSION\"/" Cargo.toml
+          rm -f Cargo.toml.bak
 
       - name: Build release
         run: cargo build --release --target ${{ matrix.target }}
