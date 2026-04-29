@@ -1,0 +1,5 @@
+@prefix ex: <http://example.org/> .
+@prefix foo: <http://foo.example/> .
+
+ex:s4 ex:p foo:vC .
+ex:s5 ex:p "v5" .

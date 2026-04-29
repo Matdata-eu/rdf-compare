@@ -28,20 +28,30 @@ fn has_blank_node(t: &Triple) -> bool {
     matches!(t.subject, NamedOrBlankNode::BlankNode(_)) || matches!(t.object, Term::BlankNode(_))
 }
 
+/// Outcome of parsing one input file.
+#[derive(Debug, Default, Clone)]
+pub struct ParseOutcome {
+    pub total: u64,
+    pub skipped: u64,
+    /// Prefix declarations encountered in the source, in iteration order.
+    /// Empty for formats that do not carry prefixes (N-Triples, N-Quads, RDF/XML).
+    pub prefixes: Vec<(String, String)>,
+}
+
 /// Stream-parse `reader` according to `format`. For each triple (after dropping
 /// any graph context for quad formats), invoke `on_triple`. Triples involving a
-/// blank node are skipped and increment `skipped`.
+/// blank node are skipped and increment the skipped counter.
 ///
-/// Returns `(total_triples_seen, skipped_blank_node_count)` where
-/// `total_triples_seen` counts every parsed (non-blank-node) triple delivered
-/// to the callback.
+/// Returns a [`ParseOutcome`] containing totals and any prefix declarations
+/// seen in the source.
 pub fn parse_triples<R: BufRead, F: FnMut(Triple) -> Result<()>>(
     reader: R,
     format: InputFormat,
     mut on_triple: F,
-) -> Result<(u64, u64)> {
+) -> Result<ParseOutcome> {
     let mut total: u64 = 0;
     let mut skipped: u64 = 0;
+    let mut prefixes: Vec<(String, String)> = Vec::new();
 
     macro_rules! handle_triple {
         ($t:expr) => {{
@@ -64,11 +74,16 @@ pub fn parse_triples<R: BufRead, F: FnMut(Triple) -> Result<()>>(
             }
         }
         InputFormat::Ttl => {
-            let parser = oxttl::TurtleParser::new().for_reader(reader);
-            for tri in parser {
+            let mut parser = oxttl::TurtleParser::new().for_reader(reader);
+            while let Some(tri) = parser.next() {
                 let t = tri.context("Turtle parse error")?;
                 handle_triple!(t);
             }
+            prefixes.extend(
+                parser
+                    .prefixes()
+                    .map(|(k, v)| (k.to_string(), v.to_string())),
+            );
         }
         InputFormat::Rdf => {
             let parser = oxrdfxml::RdfXmlParser::new().for_reader(reader);
@@ -78,11 +93,16 @@ pub fn parse_triples<R: BufRead, F: FnMut(Triple) -> Result<()>>(
             }
         }
         InputFormat::Trig => {
-            let parser = oxttl::TriGParser::new().for_reader(reader);
-            for q in parser {
+            let mut parser = oxttl::TriGParser::new().for_reader(reader);
+            while let Some(q) = parser.next() {
                 let q = q.context("TriG parse error")?;
                 handle_triple!(Triple::new(q.subject, q.predicate, q.object));
             }
+            prefixes.extend(
+                parser
+                    .prefixes()
+                    .map(|(k, v)| (k.to_string(), v.to_string())),
+            );
         }
         InputFormat::Nq => {
             let parser = oxttl::NQuadsParser::new().for_reader(reader);
@@ -93,5 +113,9 @@ pub fn parse_triples<R: BufRead, F: FnMut(Triple) -> Result<()>>(
         }
     }
 
-    Ok((total, skipped))
+    Ok(ParseOutcome {
+        total,
+        skipped,
+        prefixes,
+    })
 }
