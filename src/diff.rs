@@ -80,15 +80,45 @@ impl<W: Write> QuadSink for NqSink<W> {
     }
 }
 
-fn make_sink(format: OutputFormat, w: Box<dyn Write>) -> Box<dyn QuadSink> {
-    match format {
-        OutputFormat::Trig => Box::new(TrigSink {
-            inner: oxttl::TriGSerializer::new().for_writer(w),
-        }),
+fn make_sink(
+    format: OutputFormat,
+    w: Box<dyn Write>,
+    prefixes: &[(String, String)],
+) -> Result<Box<dyn QuadSink>> {
+    Ok(match format {
+        OutputFormat::Trig => {
+            let mut s = oxttl::TriGSerializer::new();
+            for (name, iri) in prefixes {
+                s = s.with_prefix(name, iri).with_context(|| {
+                    format!("invalid prefix IRI for `{name}`: <{iri}>")
+                })?;
+            }
+            Box::new(TrigSink {
+                inner: s.for_writer(w),
+            })
+        }
         OutputFormat::Nq => Box::new(NqSink {
             inner: oxttl::NQuadsSerializer::new().for_writer(w),
         }),
+    })
+}
+
+/// Merge prefix lists from file A and file B. Prefixes from A are kept as-is;
+/// any prefix name from B that is not already declared by A is appended.
+/// Order is preserved: A's declarations first (in their original order), then
+/// B's new declarations (in their original order).
+fn merge_prefixes(
+    a: Vec<(String, String)>,
+    b: Vec<(String, String)>,
+) -> Vec<(String, String)> {
+    let mut seen: HashSet<String> = HashSet::with_capacity(a.len() + b.len());
+    let mut out: Vec<(String, String)> = Vec::with_capacity(a.len() + b.len());
+    for (name, iri) in a.into_iter().chain(b.into_iter()) {
+        if seen.insert(name.clone()) {
+            out.push((name, iri));
+        }
     }
+    out
 }
 
 pub fn run_diff(args: &Args) -> Result<DiffStats> {
@@ -102,35 +132,42 @@ pub fn run_diff(args: &Args) -> Result<DiffStats> {
         args.graph_b.as_deref(),
     )?;
 
-    let writer = open_writer(args.output.as_deref())?;
-    let mut sink = make_sink(args.output_format, writer);
-
     // Phase 1: load A.
     let mut set: HashSet<Triple> = HashSet::new();
     let reader_a = open_reader(&args.file_a)?;
-    let (a_total, a_skipped) = parse_triples(reader_a, fmt_a, |t| {
+    let outcome_a = parse_triples(reader_a, fmt_a, |t| {
         set.insert(t);
         Ok(())
     })
     .with_context(|| format!("while parsing {}", args.file_a.display()))?;
 
-    // Phase 2: stream B; emit b-only quads on the fly.
-    let mut b_only: u64 = 0;
+    // Phase 2: stream B; buffer b-only triples so we can emit them after the
+    // serializer (which needs all prefix declarations up front) is built.
+    let mut b_only_triples: Vec<Triple> = Vec::new();
     let reader_b = open_reader(&args.file_b)?;
-    let graph_b_name = GraphName::NamedNode(graph_b.clone());
-    let (b_total, b_skipped) = parse_triples(reader_b, fmt_b, |t| {
-        if set.remove(&t) {
-            // common triple, drop it
-        } else {
-            let q = make_quad(t, &graph_b_name);
-            sink.write(&q)?;
-            b_only += 1;
+    let outcome_b = parse_triples(reader_b, fmt_b, |t| {
+        if !set.remove(&t) {
+            b_only_triples.push(t);
         }
         Ok(())
     })
     .with_context(|| format!("while parsing {}", args.file_b.display()))?;
 
-    // Phase 3: drain remaining A entries as a-only quads.
+    // Build the output sink with merged prefixes (A wins on conflicts).
+    let prefixes = merge_prefixes(outcome_a.prefixes, outcome_b.prefixes);
+    let writer = open_writer(args.output.as_deref())?;
+    let mut sink = make_sink(args.output_format, writer, &prefixes)?;
+
+    // Phase 3a: emit b-only quads.
+    let graph_b_name = GraphName::NamedNode(graph_b.clone());
+    let mut b_only: u64 = 0;
+    for t in b_only_triples {
+        let q = make_quad(t, &graph_b_name);
+        sink.write(&q)?;
+        b_only += 1;
+    }
+
+    // Phase 3b: drain remaining A entries as a-only quads.
     let graph_a_name = GraphName::NamedNode(graph_a);
     let mut a_only: u64 = 0;
     for t in set.drain() {
@@ -141,6 +178,8 @@ pub fn run_diff(args: &Args) -> Result<DiffStats> {
 
     sink.finish()?;
 
+    let a_total = outcome_a.total;
+    let b_total = outcome_b.total;
     let common = a_total.saturating_sub(a_only);
     Ok(DiffStats {
         a_total,
@@ -148,8 +187,8 @@ pub fn run_diff(args: &Args) -> Result<DiffStats> {
         common,
         a_only,
         b_only,
-        a_skipped_bnodes: a_skipped,
-        b_skipped_bnodes: b_skipped,
+        a_skipped_bnodes: outcome_a.skipped,
+        b_skipped_bnodes: outcome_b.skipped,
     })
 }
 
