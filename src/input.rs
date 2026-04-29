@@ -75,7 +75,7 @@ pub fn parse_triples<R: BufRead, F: FnMut(Triple) -> Result<()>>(
         }
         InputFormat::Ttl => {
             let mut parser = oxttl::TurtleParser::new().for_reader(reader);
-            while let Some(tri) = parser.next() {
+            for tri in parser.by_ref() {
                 let t = tri.context("Turtle parse error")?;
                 handle_triple!(t);
             }
@@ -94,7 +94,7 @@ pub fn parse_triples<R: BufRead, F: FnMut(Triple) -> Result<()>>(
         }
         InputFormat::Trig => {
             let mut parser = oxttl::TriGParser::new().for_reader(reader);
-            while let Some(q) = parser.next() {
+            for q in parser.by_ref() {
                 let q = q.context("TriG parse error")?;
                 handle_triple!(Triple::new(q.subject, q.predicate, q.object));
             }

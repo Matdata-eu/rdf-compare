@@ -110,7 +110,7 @@ fn make_sink(
 fn merge_prefixes(a: Vec<(String, String)>, b: Vec<(String, String)>) -> Vec<(String, String)> {
     let mut seen: HashSet<String> = HashSet::with_capacity(a.len() + b.len());
     let mut out: Vec<(String, String)> = Vec::with_capacity(a.len() + b.len());
-    for (name, iri) in a.into_iter().chain(b.into_iter()) {
+    for (name, iri) in a.into_iter().chain(b) {
         if seen.insert(name.clone()) {
             out.push((name, iri));
         }
