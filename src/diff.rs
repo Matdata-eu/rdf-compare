@@ -89,9 +89,9 @@ fn make_sink(
         OutputFormat::Trig => {
             let mut s = oxttl::TriGSerializer::new();
             for (name, iri) in prefixes {
-                s = s.with_prefix(name, iri).with_context(|| {
-                    format!("invalid prefix IRI for `{name}`: <{iri}>")
-                })?;
+                s = s
+                    .with_prefix(name, iri)
+                    .with_context(|| format!("invalid prefix IRI for `{name}`: <{iri}>"))?;
             }
             Box::new(TrigSink {
                 inner: s.for_writer(w),
@@ -107,10 +107,7 @@ fn make_sink(
 /// any prefix name from B that is not already declared by A is appended.
 /// Order is preserved: A's declarations first (in their original order), then
 /// B's new declarations (in their original order).
-fn merge_prefixes(
-    a: Vec<(String, String)>,
-    b: Vec<(String, String)>,
-) -> Vec<(String, String)> {
+fn merge_prefixes(a: Vec<(String, String)>, b: Vec<(String, String)>) -> Vec<(String, String)> {
     let mut seen: HashSet<String> = HashSet::with_capacity(a.len() + b.len());
     let mut out: Vec<(String, String)> = Vec::with_capacity(a.len() + b.len());
     for (name, iri) in a.into_iter().chain(b.into_iter()) {
