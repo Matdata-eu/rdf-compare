@@ -88,9 +88,7 @@ pub fn run_webviewer(args: &Args) -> Result<()> {
         right,
         details,
     };
-    let data_json = serde_json::to_string(&data)?
-        .replace("</script>", "<\\/script>")
-        .replace("</SCRIPT>", "<\\/SCRIPT>");
+    let data_json = escape_script_json(&serde_json::to_string(&data)?);
     let html = build_html(&data_json, args);
     let bind_addr = format!("{}:{}", args.webviewer_host, args.webviewer_port);
     let listener = TcpListener::bind(&bind_addr)
@@ -111,9 +109,14 @@ pub fn run_webviewer(args: &Args) -> Result<()> {
     for stream in listener.incoming() {
         let stream = match stream {
             Ok(s) => s,
-            Err(_) => continue,
+            Err(err) => {
+                eprintln!("webviewer: failed to accept connection: {err}");
+                continue;
+            }
         };
-        let _ = handle_connection(stream, &html);
+        if let Err(err) = handle_connection(stream, &html) {
+            eprintln!("webviewer: request handling error: {err}");
+        }
     }
     Ok(())
 }
@@ -189,7 +192,9 @@ fn handle_connection(mut stream: TcpStream, body: &str) -> Result<()> {
     let mut request_line = String::new();
     {
         let mut reader = BufReader::new(&mut stream);
-        let _ = reader.read_line(&mut request_line);
+        reader
+            .read_line(&mut request_line)
+            .context("failed to read request line")?;
     }
     let path = request_line
         .split_whitespace()
@@ -307,7 +312,7 @@ fn build_html(data_json: &str, args: &Args) -> String {
         wktLabel.textContent = 'No WKT literal selected.';
         return;
       }}
-      const pointMatch = wkt.match(/POINT\\s*\\(\\s*([\\-\\d\\.]+)\\s+([\\-\\d\\.]+)\\s*\\)/i);
+      const pointMatch = wkt.match(/POINT\\s*\\(\\s*(-?\\d+(?:\\.\\d+)?)\\s+(-?\\d+(?:\\.\\d+)?)\\s*\\)/i);
       if (!pointMatch) {{
         wktLabel.textContent = `WKT selected (currently visualized for POINT): ${{wkt}}`;
         return;
@@ -348,7 +353,7 @@ fn build_html(data_json: &str, args: &Args) -> String {
       for (const row of applyFilters(rows)) {{
         const tr = document.createElement('tr');
         if (row.common) tr.classList.add('common');
-        tr.innerHTML = `<td><button data-subj="${{encodeURIComponent(row.subject)}}" style="all:unset; cursor:pointer; color:#0366d6">${{esc(row.subject)}}</button></td><td>${{esc(row.predicate)}}</td><td>${{esc(row.object)}}</td><td>${{esc(row.prefix || '')}}</td>`;
+        tr.innerHTML = `<td><button data-subj="${{esc(row.subject)}}" style="all:unset; cursor:pointer; color:#0366d6">${{esc(row.subject)}}</button></td><td>${{esc(row.predicate)}}</td><td>${{esc(row.object)}}</td><td>${{esc(row.prefix || '')}}</td>`;
         tr.querySelector('button').addEventListener('click', () => {{
           if (state.showCommon) return;
           state.selectedSubject = row.subject;
@@ -419,6 +424,20 @@ fn build_html(data_json: &str, args: &Args) -> String {
     )
 }
 
+fn escape_script_json(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut idx = 0usize;
+    let needle = "</script";
+    while let Some(rel_pos) = input[idx..].to_ascii_lowercase().find(needle) {
+        let pos = idx + rel_pos;
+        out.push_str(&input[idx..pos]);
+        out.push_str("<\\/script");
+        idx = pos + needle.len();
+    }
+    out.push_str(&input[idx..]);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -431,5 +450,11 @@ mod tests {
             NamedNode::new(GEO_WKT_LITERAL).unwrap(),
         ));
         assert_eq!(extract_wkt(&t).as_deref(), Some("POINT(4.35 50.85)"));
+    }
+
+    #[test]
+    fn escapes_script_end_tag_case_insensitive() {
+        let escaped = escape_script_json(r#"{"x":"</ScRiPt>"}"#);
+        assert_eq!(escaped, r#"{"x":"<\/script>"}"#);
     }
 }
