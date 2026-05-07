@@ -70,6 +70,9 @@ Open the result in a browser immediately after diffing:
 rdf-compare a.ttl b.ttl --view
 ```
 
+Screenshot:
+![image](screenshot-webapp.png)
+
 Or start an interactive server (files can be selected in the browser):
 
 ```sh
