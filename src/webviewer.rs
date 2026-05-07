@@ -196,13 +196,13 @@ fn handle_connection(mut stream: TcpStream, body: &str) -> Result<()> {
             .read_line(&mut request_line)
             .context("failed to read request line")?;
     }
-    let path = request_line
-        .split_whitespace()
-        .nth(1)
-        .unwrap_or("/")
-        .to_string();
+    let mut parts = request_line.split_whitespace();
+    let method = parts.next();
+    let path = parts.next();
+    let version = parts.next();
 
-    if path == "/" {
+    let valid_get = matches!(method, Some("GET")) && version.is_some();
+    if valid_get && path == Some("/") {
         let bytes = body.as_bytes();
         write!(
             stream,
@@ -425,17 +425,10 @@ fn build_html(data_json: &str, args: &Args) -> String {
 }
 
 fn escape_script_json(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    let mut idx = 0usize;
-    let needle = "</script";
-    while let Some(rel_pos) = input[idx..].to_ascii_lowercase().find(needle) {
-        let pos = idx + rel_pos;
-        out.push_str(&input[idx..pos]);
-        out.push_str("<\\/script");
-        idx = pos + needle.len();
-    }
-    out.push_str(&input[idx..]);
-    out
+    input
+        .replace('&', "\\u0026")
+        .replace('<', "\\u003c")
+        .replace('>', "\\u003e")
 }
 
 #[cfg(test)]
@@ -454,7 +447,7 @@ mod tests {
 
     #[test]
     fn escapes_script_end_tag_case_insensitive() {
-        let escaped = escape_script_json(r#"{"x":"</ScRiPt>"}"#);
-        assert_eq!(escaped, r#"{"x":"<\/script>"}"#);
+        let escaped = escape_script_json(r#"{"x":"</ScRiPt>","y":"a&b"}"#);
+        assert_eq!(escaped, r#"{"x":"\u003c/ScRiPt\u003e","y":"a\u0026b"}"#);
     }
 }
