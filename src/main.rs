@@ -1,6 +1,7 @@
 use clap::Parser;
 use rdf_compare::cli::Args;
 use rdf_compare::diff::{DiffStats, run_diff};
+use rdf_compare::webviewer::run_webviewer;
 use std::process::ExitCode;
 use std::time::Instant;
 
@@ -10,21 +11,31 @@ fn main() -> ExitCode {
     let ci = args.ci;
 
     let start = Instant::now();
-    match run_diff(&args) {
-        Ok(stats) => {
-            let elapsed = start.elapsed();
-            if !quiet {
-                print_summary(&args, &stats, elapsed);
-            }
-            if ci && stats.has_differences() {
-                ExitCode::from(1)
-            } else {
-                ExitCode::SUCCESS
+    if args.webviewer {
+        match run_webviewer(&args) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(err) => {
+                eprintln!("rdf-compare: error: {:#}", err);
+                ExitCode::from(2)
             }
         }
-        Err(err) => {
-            eprintln!("rdf-compare: error: {:#}", err);
-            ExitCode::from(2)
+    } else {
+        match run_diff(&args) {
+            Ok(stats) => {
+                let elapsed = start.elapsed();
+                if !quiet {
+                    print_summary(&args, &stats, elapsed);
+                }
+                if ci && stats.has_differences() {
+                    ExitCode::from(1)
+                } else {
+                    ExitCode::SUCCESS
+                }
+            }
+            Err(err) => {
+                eprintln!("rdf-compare: error: {:#}", err);
+                ExitCode::from(2)
+            }
         }
     }
 }

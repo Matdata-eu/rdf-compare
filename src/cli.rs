@@ -42,6 +42,18 @@ pub struct Args {
     /// Exit with code 1 if any differences are found (useful in CI).
     #[arg(long)]
     pub ci: bool,
+
+    /// Start a local webviewer UI to inspect triples and differences.
+    #[arg(long)]
+    pub webviewer: bool,
+
+    /// Host interface for the local webviewer server.
+    #[arg(long = "webviewer-host", default_value = "127.0.0.1")]
+    pub webviewer_host: String,
+
+    /// Port for the local webviewer server.
+    #[arg(long = "webviewer-port", default_value_t = 7878)]
+    pub webviewer_port: u16,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]

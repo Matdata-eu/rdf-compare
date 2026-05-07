@@ -57,6 +57,9 @@ rdf-compare snapshot-old.nt.gz snapshot-new.ttl \
 
 # Use in CI: exit 1 when files differ
 rdf-compare expected.ttl actual.ttl --ci --quiet -o /dev/null
+
+# Start local webviewer UI
+rdf-compare a.ttl b.ttl --webviewer
 ```
 
 ### Options
@@ -71,6 +74,9 @@ rdf-compare expected.ttl actual.ttl --ci --quiet -o /dev/null
 | `--graph-b <IRI>` | Override the named-graph IRI for "only-in-B" triples. |
 | `--quiet` | Suppress the summary line on stderr. |
 | `--ci` | Exit with code 1 if any differences are found. |
+| `--webviewer` | Start local webviewer UI instead of writing diff output. |
+| `--webviewer-host <HOST>` | Webviewer bind host (default `127.0.0.1`). |
+| `--webviewer-port <PORT>` | Webviewer bind port (default `7878`). |
 
 ### Exit codes
 

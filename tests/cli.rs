@@ -22,6 +22,9 @@ fn args(a: &str, b: &str, out: PathBuf, fmt: OutputFormat) -> Args {
         graph_b: None,
         quiet: true,
         ci: false,
+        webviewer: false,
+        webviewer_host: "127.0.0.1".to_string(),
+        webviewer_port: 7878,
     }
 }
 
@@ -161,6 +164,9 @@ fn first_file_prefix_wins_over_second() {
         graph_b: None,
         quiet: true,
         ci: false,
+        webviewer: false,
+        webviewer_host: "127.0.0.1".to_string(),
+        webviewer_port: 7878,
     };
     a.graph_a = Some("urn:test:left".to_string());
     a.graph_b = Some("urn:test:right".to_string());
