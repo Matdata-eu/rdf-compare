@@ -1,15 +1,33 @@
 use anyhow::{Result, anyhow, bail};
-use clap::{Parser, ValueEnum};
+use clap::{Args as ClapArgs, Parser, Subcommand, ValueEnum};
 use std::path::{Path, PathBuf};
 
-/// Compare two RDF files and emit the diff as a quad dataset with two named graphs.
+/// Top-level CLI entry point. Supports the default diff invocation
+/// (`rdf-compare A B …`) and a `serve` subcommand for the web viewer.
 #[derive(Debug, Parser)]
 #[command(version, about, long_about = None)]
+pub struct Cli {
+    #[command(subcommand)]
+    pub command: Option<Command>,
+
+    #[command(flatten)]
+    pub diff: Args,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum Command {
+    /// Start the local web viewer. Files can be preloaded via flags or
+    /// selected interactively in the browser.
+    Serve(ServeArgs),
+}
+
+/// Compare two RDF files and emit the diff as a quad dataset with two named graphs.
+#[derive(Debug, ClapArgs)]
 pub struct Args {
     /// First (left) RDF file.
-    pub file_a: PathBuf,
+    pub file_a: Option<PathBuf>,
     /// Second (right) RDF file.
-    pub file_b: PathBuf,
+    pub file_b: Option<PathBuf>,
 
     /// Override input format for file A (auto-detected from extension by default).
     #[arg(long = "format-a", value_enum)]
@@ -42,6 +60,50 @@ pub struct Args {
     /// Exit with code 1 if any differences are found (useful in CI).
     #[arg(long)]
     pub ci: bool,
+
+    /// Open the diff in the local web viewer after computing it.
+    #[arg(long)]
+    pub view: bool,
+
+    /// Do not auto-open the system browser when starting the viewer.
+    #[arg(long = "no-open")]
+    pub no_open: bool,
+
+    /// Bind address for the web viewer.
+    #[arg(long, default_value = "127.0.0.1:0")]
+    pub bind: String,
+}
+
+/// Arguments accepted by `rdf-compare serve`.
+#[derive(Debug, ClapArgs)]
+pub struct ServeArgs {
+    /// First (left) RDF file to preload.
+    #[arg(long = "file-a", requires = "file_b")]
+    pub file_a: Option<PathBuf>,
+    /// Second (right) RDF file to preload.
+    #[arg(long = "file-b", requires = "file_a")]
+    pub file_b: Option<PathBuf>,
+    /// Override input format for file A.
+    #[arg(long = "format-a", value_enum)]
+    pub format_a: Option<InputFormat>,
+    /// Override input format for file B.
+    #[arg(long = "format-b", value_enum)]
+    pub format_b: Option<InputFormat>,
+    /// Pre-existing diff file (TriG or N-Quads) to load instead of recomputing.
+    #[arg(long, conflicts_with_all = ["file_a", "file_b"])]
+    pub diff: Option<PathBuf>,
+    /// Override the named-graph IRI for the A side.
+    #[arg(long = "graph-a")]
+    pub graph_a: Option<String>,
+    /// Override the named-graph IRI for the B side.
+    #[arg(long = "graph-b")]
+    pub graph_b: Option<String>,
+    /// Bind address for the web viewer.
+    #[arg(long, default_value = "127.0.0.1:0")]
+    pub bind: String,
+    /// Do not auto-open the system browser.
+    #[arg(long = "no-open")]
+    pub no_open: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]

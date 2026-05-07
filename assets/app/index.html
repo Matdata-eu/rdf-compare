@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>rdf-compare viewer</title>
+    <link rel="stylesheet" href="/assets/vendor/tabulator/tabulator.min.css" />
+    <link rel="stylesheet" href="/assets/vendor/leaflet/leaflet.css" />
+    <link rel="stylesheet" href="/assets/app/styles.css" />
+  </head>
+  <body>
+    <header>
+      <h1>rdf-compare</h1>
+      <div id="meta" class="meta"></div>
+      <div class="controls">
+        <label class="legend"><span class="badge added" title="Triple present in B but not in A">+ Added</span></label>
+        <label class="legend"><span class="badge deleted" title="Triple present in A but not in B">− Deleted</span></label>
+        <label class="legend common-toggle">
+          <input type="checkbox" id="show-common" />
+          <span>Show common triples</span>
+          <span id="common-error" class="error-msg hidden"></span>
+        </label>
+        <button id="open-load" class="ghost">Load files…</button>
+      </div>
+    </header>
+    <main>
+      <div id="empty-state" class="empty hidden">
+        <p>No diff loaded. Use <code>--file-a</code>/<code>--file-b</code> on the CLI or the loader below.</p>
+      </div>
+      <div id="loader" class="loader hidden">
+        <h2>Load RDF files</h2>
+        <label>File A path <input id="path-a" type="text" placeholder="/path/to/a.ttl" /></label>
+        <label>File B path <input id="path-b" type="text" placeholder="/path/to/b.ttl" /></label>
+        <label>Or diff file <input id="path-diff" type="text" placeholder="/path/to/diff.trig" /></label>
+        <button id="do-load">Load</button>
+        <div id="loader-msg"></div>
+      </div>
+      <div id="table" class="table"></div>
+      <div id="loading-overlay" class="loading-overlay hidden">
+        <div class="spinner"></div>
+        <p id="loading-msg">Loading rows…</p>
+      </div>
+      <div id="map" class="map hidden"></div>
+    </main>
+    <script src="/assets/vendor/tabulator/tabulator.min.js"></script>
+    <script src="/assets/vendor/leaflet/leaflet.js"></script>
+    <script src="/assets/vendor/wellknown/wellknown.js"></script>
+    <script src="/assets/app/map.js"></script>
+    <script src="/assets/app/app.js"></script>
+  </body>
+</html>

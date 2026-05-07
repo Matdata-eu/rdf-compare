@@ -12,8 +12,8 @@ fn fixtures(name: &str) -> PathBuf {
 
 fn args(a: &str, b: &str, out: PathBuf, fmt: OutputFormat) -> Args {
     Args {
-        file_a: fixtures(a),
-        file_b: fixtures(b),
+        file_a: Some(fixtures(a)),
+        file_b: Some(fixtures(b)),
         format_a: None,
         format_b: None,
         output: Some(out),
@@ -22,6 +22,9 @@ fn args(a: &str, b: &str, out: PathBuf, fmt: OutputFormat) -> Args {
         graph_b: None,
         quiet: true,
         ci: false,
+        view: false,
+        no_open: false,
+        bind: "127.0.0.1:0".to_string(),
     }
 }
 
@@ -151,8 +154,8 @@ fn first_file_prefix_wins_over_second() {
     .unwrap();
 
     let mut a = Args {
-        file_a: a_path,
-        file_b: b_path,
+        file_a: Some(a_path),
+        file_b: Some(b_path),
         format_a: None,
         format_b: None,
         output: Some(out.clone()),
@@ -161,6 +164,9 @@ fn first_file_prefix_wins_over_second() {
         graph_b: None,
         quiet: true,
         ci: false,
+        view: false,
+        no_open: false,
+        bind: "127.0.0.1:0".to_string(),
     };
     a.graph_a = Some("urn:test:left".to_string());
     a.graph_b = Some("urn:test:right".to_string());

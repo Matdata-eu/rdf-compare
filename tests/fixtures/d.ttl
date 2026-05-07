@@ -1,0 +1,8 @@
+@prefix ex: <http://example.org/> .
+@prefix gsp: <http://www.opengis.net/ont/geosparql#> .
+
+ex:s1 ex:p "stays the same" .
+ex:s2 ex:p "stays the same" .
+ex:s3 ex:p "has changed" .
+ex:pos_common gsp:asWKT "POINT(10.827397 59.350658)"^^gsp:wktLiteral .
+ex:pos_changes gsp:asWKT "POINT(10.838397 59.361658)"^^gsp:wktLiteral .

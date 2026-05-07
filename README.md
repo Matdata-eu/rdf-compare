@@ -24,6 +24,9 @@ Triples that appear in both files are omitted (they are the "common core").
 - **Blank-node-safe.** Triples touching blank nodes are skipped (without a
   canonicalisation step they cannot be reliably diffed); the count of skipped
   triples is reported in the summary.
+- **Web viewer** (`--view` / `serve` subcommand) — explore the diff in an
+  interactive browser UI with filtering, sorting, prefix-shortened IRIs, and a
+  Leaflet map for `geo:wktLiteral` cells.
 
 ## Install
 
@@ -41,11 +44,11 @@ cargo install rdf-compare
 
 ## Usage
 
+### Diff (default)
+
 ```sh
 rdf-compare <FILE_A> <FILE_B> [OPTIONS]
 ```
-
-Examples:
 
 ```sh
 # Diff two Turtle files, write TriG to stdout
@@ -59,7 +62,34 @@ rdf-compare snapshot-old.nt.gz snapshot-new.ttl \
 rdf-compare expected.ttl actual.ttl --ci --quiet -o /dev/null
 ```
 
-### Options
+### Web viewer
+
+Open the result in a browser immediately after diffing:
+
+```sh
+rdf-compare a.ttl b.ttl --view
+```
+
+Or start an interactive server (files can be selected in the browser):
+
+```sh
+# Empty viewer — load files interactively in the browser
+rdf-compare serve
+
+# Pre-load two source files
+rdf-compare serve --file-a a.ttl --file-b b.ttl
+
+# Pre-load a previously saved diff file
+rdf-compare serve --diff diff.trig
+
+# Bind to a fixed port and skip auto-opening the browser
+rdf-compare serve --file-a a.ttl --file-b b.ttl --bind 127.0.0.1:8080 --no-open
+```
+
+The viewer runs entirely offline — all assets (Tabulator, Leaflet, wellknown)
+are bundled inside the binary.
+
+### Options — diff
 
 | Flag | Description |
 | --- | --- |
@@ -71,6 +101,23 @@ rdf-compare expected.ttl actual.ttl --ci --quiet -o /dev/null
 | `--graph-b <IRI>` | Override the named-graph IRI for "only-in-B" triples. |
 | `--quiet` | Suppress the summary line on stderr. |
 | `--ci` | Exit with code 1 if any differences are found. |
+| `--view` | Open the diff in the local web viewer after computing it. |
+| `--no-open` | Do not auto-open the system browser (implies `--view`). |
+| `--bind <ADDR>` | Bind address for the viewer (default: `127.0.0.1:0`). |
+
+### Options — `serve` subcommand
+
+| Flag | Description |
+| --- | --- |
+| `--file-a <FILE>` | First RDF file to pre-load (requires `--file-b`). |
+| `--file-b <FILE>` | Second RDF file to pre-load (requires `--file-a`). |
+| `--format-a <FMT>` | Force input format for file A. |
+| `--format-b <FMT>` | Force input format for file B. |
+| `--diff <FILE>` | Pre-load a saved diff file instead of recomputing (conflicts with `--file-a`/`--file-b`). |
+| `--graph-a <IRI>` | Override the named-graph IRI for the A side. |
+| `--graph-b <IRI>` | Override the named-graph IRI for the B side. |
+| `--bind <ADDR>` | Bind address (default: `127.0.0.1:0`). |
+| `--no-open` | Do not auto-open the system browser. |
 
 ### Exit codes
 
