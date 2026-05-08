@@ -15,7 +15,7 @@ anyhow = "1"
 axum = { version = "0.7", default-features = false, features = ["http1", "tokio", "json", "query"] }
 clap = { version = "4", features = ["derive"] }
 flate2 = "1"
-oxrdf = "0.3"
+oxrdf = { version = "0.3", features = ["rdfc-10"] }
 oxrdfxml = "0.2"
 oxttl = "0.2"
 percent-encoding = "2"

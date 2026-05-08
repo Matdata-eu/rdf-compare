@@ -21,9 +21,14 @@ Triples that appear in both files are omitted (they are the "common core").
 - **Filename-derived graph IRIs** (`urn:rdf-compare:source:<basename>`) with
   automatic `:1` / `:2` disambiguation when both files share a basename.
 - **CI mode** (`--ci`) exits non-zero when any difference is found.
-- **Blank-node-safe.** Triples touching blank nodes are skipped (without a
-  canonicalisation step they cannot be reliably diffed); the count of skipped
-  triples is reported in the summary.
+- **Blank-node aware.** When either input contains blank nodes, both sides are
+  canonicalised with the [W3C RDFC-1.0](https://www.w3.org/TR/rdf-canon/)
+  algorithm before the set-diff, so isomorphic sub-graphs cancel regardless of
+  the bnode labels used. Pass `--ignore-blank-nodes` to opt out and skip every
+  triple touching a bnode instead.
+- **Quad-aware.** N-Quads and TriG inputs preserve their named graphs; the diff
+  is then written as two parallel files (one per side) since RDF cannot nest
+  named graphs.
 - **Web viewer** (`--view` / `serve` subcommand) — explore the diff in an
   interactive browser UI with filtering, sorting, prefix-shortened IRIs, and a
   Leaflet map for `geo:wktLiteral` cells.
@@ -107,6 +112,7 @@ are bundled inside the binary.
 | `--view` | Open the diff in the local web viewer after computing it. |
 | `--no-open` | Do not auto-open the system browser (implies `--view`). |
 | `--bind <ADDR>` | Bind address for the viewer (default: `127.0.0.1:0`). |
+| `--ignore-blank-nodes` | Skip every triple touching a blank node instead of canonicalising. |
 
 ### Options — `serve` subcommand
 
@@ -169,14 +175,23 @@ B: b.ttl  triples=3  only-in-B=2  skipped-bnodes=0
 common=1
 ```
 
-## Limitations
+## How it works
 
-- **Blank nodes are not diffed.** Computing equivalence for triples involving
-  blank nodes requires graph canonicalisation (e.g. RDFC-1.0). Such triples are
-  reported as `skipped-bnodes` and excluded from both the comparison and the
-  output.
-- **Quad inputs are flattened.** The graph component of N-Quads / TriG inputs is
-  dropped; only the (s, p, o) triples are compared.
+1. Each input is parsed into a quad stream (triple inputs are tagged with the
+   default graph).
+2. If either side contains blank nodes, both sides are independently
+   canonicalised using [W3C RDFC-1.0](https://www.w3.org/TR/rdf-canon/) so
+   that isomorphic blank-node structures receive identical canonical labels.
+3. A symmetric set-diff yields the *only-in-A* and *only-in-B* quad sets.
+4. For triple-only inputs, the two sides are written into a single TriG / N-Quads
+   file under per-side wrapper graph IRIs. For quad inputs, the original named
+   graphs are preserved and the result is split across two parallel files
+   (`<output>-a.<ext>` and `<output>-b.<ext>`) — quad inputs therefore require
+   `--output`.
+
+With `--ignore-blank-nodes`, step 2 is skipped and every triple touching a
+blank node is dropped before the set-diff; the counts appear as
+`skipped-bnodes` in the summary.
 
 ## Development
 

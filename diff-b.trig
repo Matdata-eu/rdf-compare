@@ -1,0 +1,4 @@
+<http://example.org/g2> {
+	<http://example.org/s3> <http://example.org/p> "vB" .
+	<http://example.org/s4> <http://example.org/p> "v4" .
+}

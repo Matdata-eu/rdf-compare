@@ -11,7 +11,7 @@ use axum::extract::{Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
-use oxrdf::{Term, Triple};
+use oxrdf::{Quad, Term};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -123,13 +123,13 @@ struct RowDto<'a> {
     o: ObjectDto<'a>,
 }
 
-fn write_row<W: std::io::Write>(w: &mut W, action: &str, t: &Triple) -> std::io::Result<()> {
-    let s = match &t.subject {
+fn write_row<W: std::io::Write>(w: &mut W, action: &str, q: &Quad) -> std::io::Result<()> {
+    let s = match &q.subject {
         oxrdf::NamedOrBlankNode::NamedNode(n) => n.as_str().to_string(),
         oxrdf::NamedOrBlankNode::BlankNode(b) => format!("_:{}", b.as_str()),
     };
-    let p = t.predicate.as_str();
-    let obj = match &t.object {
+    let p = q.predicate.as_str();
+    let obj = match &q.object {
         Term::NamedNode(n) => ObjectDto {
             t: "iri",
             v: n.as_str(),
@@ -233,7 +233,13 @@ async fn rows(State(s): State<AppState>, Query(q): Query<RowsQuery>) -> Response
                 let fmt_b = data.format_b;
                 let mut buf = Vec::with_capacity(256 * 1024);
                 stream_common_triples(&file_a, &file_b, fmt_a, fmt_b, |t| {
-                    write_row(&mut buf, "=", t).map_err(anyhow::Error::from)?;
+                    let q = Quad {
+                        subject: t.subject.clone(),
+                        predicate: t.predicate.clone(),
+                        object: t.object.clone(),
+                        graph_name: oxrdf::GraphName::DefaultGraph,
+                    };
+                    write_row(&mut buf, "=", &q).map_err(anyhow::Error::from)?;
                     Ok(())
                 })?;
                 Ok(buf)
@@ -267,6 +273,8 @@ struct LoadBody {
     diff: Option<PathBuf>,
     graph_a: Option<String>,
     graph_b: Option<String>,
+    #[serde(default)]
+    ignore_blank_nodes: bool,
 }
 
 async fn load(State(s): State<AppState>, Json(body): Json<LoadBody>) -> Response {
@@ -289,6 +297,7 @@ async fn load(State(s): State<AppState>, Json(body): Json<LoadBody>) -> Response
             format_b: None,
             graph_a: body.graph_a,
             graph_b: body.graph_b,
+            ignore_blank_nodes: body.ignore_blank_nodes,
         };
         match tokio::task::spawn_blocking(move || compute_diff(&inputs)).await {
             Ok(r) => r,
@@ -331,6 +340,7 @@ mod tests {
             format_b: None,
             graph_a: None,
             graph_b: None,
+            ignore_blank_nodes: false,
         };
         let d = compute_diff(&inputs).unwrap();
         let bytes = render_diff_ndjson(&d);

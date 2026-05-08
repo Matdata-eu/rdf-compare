@@ -25,6 +25,7 @@ fn args(a: &str, b: &str, out: PathBuf, fmt: OutputFormat) -> Args {
         view: false,
         no_open: false,
         bind: "127.0.0.1:0".to_string(),
+        ignore_blank_nodes: false,
     }
 }
 
@@ -167,6 +168,7 @@ fn first_file_prefix_wins_over_second() {
         view: false,
         no_open: false,
         bind: "127.0.0.1:0".to_string(),
+        ignore_blank_nodes: false,
     };
     a.graph_a = Some("urn:test:left".to_string());
     a.graph_b = Some("urn:test:right".to_string());
@@ -182,4 +184,110 @@ fn first_file_prefix_wins_over_second() {
         !body.contains("@prefix ex: <http://b.example/>"),
         "B's ex: prefix must not override A's, got:\n{body}"
     );
+}
+
+#[test]
+fn isomorphic_blank_nodes_diff_to_zero() {
+    // Same shape, different bnode labels. RDFC-1.0 must canonicalise both
+    // sides to the same labels so the set-diff is empty.
+    let tmp = std::env::temp_dir().join("rdf-compare-bnode-iso.trig");
+    let _ = std::fs::remove_file(&tmp);
+    let stats = run_diff(&args(
+        "bnode-iso-a.ttl",
+        "bnode-iso-b.ttl",
+        tmp.clone(),
+        OutputFormat::Trig,
+    ))
+    .unwrap();
+    assert_eq!(stats.a_only, 0, "stats: {stats:?}");
+    assert_eq!(stats.b_only, 0, "stats: {stats:?}");
+    assert!(!stats.has_differences());
+    // Default mode does NOT skip bnodes anymore.
+    assert_eq!(stats.a_skipped_bnodes, 0);
+    assert_eq!(stats.b_skipped_bnodes, 0);
+}
+
+#[test]
+fn structurally_different_blank_nodes_diff() {
+    let tmp = std::env::temp_dir().join("rdf-compare-bnode-diff.trig");
+    let _ = std::fs::remove_file(&tmp);
+    let stats = run_diff(&args(
+        "bnode-diff-a.ttl",
+        "bnode-diff-b.ttl",
+        tmp.clone(),
+        OutputFormat::Trig,
+    ))
+    .unwrap();
+    // The `ex:knows _:bnode` edge canonicalises identically on both sides
+    // (same shape) and cancels. The `ex:name` literal differs, leaving one
+    // unique edge per side.
+    assert_eq!(stats.a_only, 1, "stats: {stats:?}");
+    assert_eq!(stats.b_only, 1, "stats: {stats:?}");
+    let body = std::fs::read_to_string(&tmp).unwrap();
+    assert!(body.contains("\"Bob\""));
+    assert!(body.contains("\"Carol\""));
+}
+
+#[test]
+fn ignore_blank_nodes_falls_back_to_skipping() {
+    let tmp = std::env::temp_dir().join("rdf-compare-bnode-skip.trig");
+    let _ = std::fs::remove_file(&tmp);
+    let mut a = args(
+        "bnode-iso-a.ttl",
+        "bnode-iso-b.ttl",
+        tmp.clone(),
+        OutputFormat::Trig,
+    );
+    a.ignore_blank_nodes = true;
+    let stats = run_diff(&a).unwrap();
+    // Both bnode-bearing statements on each side are skipped.
+    assert_eq!(stats.a_total, 0);
+    assert_eq!(stats.b_total, 0);
+    assert_eq!(stats.a_skipped_bnodes, 2);
+    assert_eq!(stats.b_skipped_bnodes, 2);
+    assert_eq!(stats.a_only, 0);
+    assert_eq!(stats.b_only, 0);
+}
+
+#[test]
+fn nq_inputs_emit_dual_output_files() {
+    let dir = std::env::temp_dir().join("rdf-compare-nq-dual");
+    let _ = std::fs::create_dir_all(&dir);
+    let out = dir.join("out.nq");
+    let path_a = dir.join("out-a.nq");
+    let path_b = dir.join("out-b.nq");
+    let _ = std::fs::remove_file(&path_a);
+    let _ = std::fs::remove_file(&path_b);
+    let _ = std::fs::remove_file(&out);
+
+    let stats = run_diff(&args(
+        "quads-a.nq",
+        "quads-b.nq",
+        out.clone(),
+        OutputFormat::Nq,
+    ))
+    .unwrap();
+    assert_eq!(stats.a_only, 1, "stats: {stats:?}");
+    assert_eq!(stats.b_only, 2, "stats: {stats:?}");
+
+    // The merged single output file must NOT exist; instead, two per-side
+    // files preserving the original named graphs must be written.
+    assert!(
+        !out.exists(),
+        "single-file output must not exist for quad inputs"
+    );
+    assert!(path_a.exists(), "missing per-side A file at {path_a:?}");
+    assert!(path_b.exists(), "missing per-side B file at {path_b:?}");
+
+    let body_a = std::fs::read_to_string(&path_a).unwrap();
+    let body_b = std::fs::read_to_string(&path_b).unwrap();
+    // Original graph names must be preserved (no wrapper graph IRIs).
+    assert!(body_a.contains("<http://example.org/g2>"));
+    assert!(body_b.contains("<http://example.org/g2>"));
+    assert!(!body_a.contains("urn:rdf-compare:source:"));
+    assert!(!body_b.contains("urn:rdf-compare:source:"));
+    // A-only payload: "vA"; B-only payload: "vB" and "v4".
+    assert!(body_a.contains("\"vA\""));
+    assert!(body_b.contains("\"vB\""));
+    assert!(body_b.contains("\"v4\""));
 }

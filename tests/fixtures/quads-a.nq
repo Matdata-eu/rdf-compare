@@ -1,0 +1,3 @@
+<http://example.org/s1> <http://example.org/p> "v1" <http://example.org/g1> .
+<http://example.org/s2> <http://example.org/p> "v2" <http://example.org/g1> .
+<http://example.org/s3> <http://example.org/p> "vA" <http://example.org/g2> .

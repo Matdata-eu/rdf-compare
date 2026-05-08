@@ -1,9 +1,11 @@
 use crate::cli::{InputFormat, OutputFormat};
 use crate::graph_iri::resolve_graph_iris;
-use crate::input::{open_reader, parse_triples};
+use crate::input::{is_quad_format, open_reader, parse_quads, parse_triples, quad_to_triple};
 use anyhow::{Context, Result, bail};
-use oxrdf::{GraphName, NamedNode, NamedOrBlankNode, Quad, Triple};
+use oxrdf::dataset::CanonicalizationAlgorithm;
+use oxrdf::{Dataset, GraphName, NamedNode, NamedOrBlankNode, Quad, Triple};
 use std::collections::HashSet;
+use std::ffi::OsStr;
 use std::fs::File;
 use std::io::{BufWriter, Write, stdout};
 use std::path::{Path, PathBuf};
@@ -27,10 +29,17 @@ impl DiffStats {
 
 /// Full result of a diff computation, kept in memory so it can be either
 /// serialized to disk or served from the web viewer.
+///
+/// `a_only` / `b_only` carry [`Quad`]s. In **triple mode** (`quad_mode = false`)
+/// each quad's graph component is the wrapper graph IRI (`graph_a` / `graph_b`)
+/// and the diff is written as a single TriG/N-Quads document containing two
+/// named graphs. In **quad mode** (at least one input is N-Quads or TriG)
+/// the original graph names from the source are preserved and the diff is
+/// emitted as two separate files (one per side).
 #[derive(Debug, Clone)]
 pub struct DiffResult {
-    pub a_only: Vec<Triple>,
-    pub b_only: Vec<Triple>,
+    pub a_only: Vec<Quad>,
+    pub b_only: Vec<Quad>,
     /// Merged prefix declarations from A and B. A wins on conflicts.
     pub prefixes: Vec<(String, String)>,
     pub graph_a: NamedNode,
@@ -42,9 +51,18 @@ pub struct DiffResult {
     pub source_b: Option<PathBuf>,
     pub format_a: Option<InputFormat>,
     pub format_b: Option<InputFormat>,
+    pub quad_mode: bool,
 }
 
-fn triple_order(a: &Triple, b: &Triple) -> std::cmp::Ordering {
+fn graph_name_str(g: &GraphName) -> &str {
+    match g {
+        GraphName::NamedNode(n) => n.as_str(),
+        GraphName::BlankNode(b) => b.as_str(),
+        GraphName::DefaultGraph => "",
+    }
+}
+
+fn quad_order(a: &Quad, b: &Quad) -> std::cmp::Ordering {
     let sa = match &a.subject {
         NamedOrBlankNode::NamedNode(n) => n.as_str(),
         NamedOrBlankNode::BlankNode(bn) => bn.as_str(),
@@ -53,20 +71,27 @@ fn triple_order(a: &Triple, b: &Triple) -> std::cmp::Ordering {
         NamedOrBlankNode::NamedNode(n) => n.as_str(),
         NamedOrBlankNode::BlankNode(bn) => bn.as_str(),
     };
-    sa.cmp(sb)
+    graph_name_str(&a.graph_name)
+        .cmp(graph_name_str(&b.graph_name))
+        .then_with(|| sa.cmp(sb))
         .then_with(|| a.predicate.as_str().cmp(b.predicate.as_str()))
 }
 
 impl DiffResult {
-    /// Sort `a_only` and `b_only` by (subject, predicate) so the web viewer
-    /// receives rows in a deterministic order without client-side sorting.
     pub fn sort_rows(&mut self) {
-        self.a_only.sort_unstable_by(triple_order);
-        self.b_only.sort_unstable_by(triple_order);
+        self.a_only.sort_unstable_by(quad_order);
+        self.b_only.sort_unstable_by(quad_order);
+    }
+
+    pub fn a_only_triples(&self) -> impl Iterator<Item = Triple> + '_ {
+        self.a_only.iter().map(quad_to_triple)
+    }
+
+    pub fn b_only_triples(&self) -> impl Iterator<Item = Triple> + '_ {
+        self.b_only.iter().map(quad_to_triple)
     }
 }
 
-/// Inputs for [`compute_diff`].
 #[derive(Debug, Clone)]
 pub struct DiffInputs {
     pub file_a: PathBuf,
@@ -75,17 +100,15 @@ pub struct DiffInputs {
     pub format_b: Option<InputFormat>,
     pub graph_a: Option<String>,
     pub graph_b: Option<String>,
+    /// When true, blank-node-bearing statements are skipped instead of
+    /// canonicalised via RDFC-1.0.
+    pub ignore_blank_nodes: bool,
 }
 
-/// Inputs for [`load_diff_file`].
 #[derive(Debug, Clone)]
 pub struct LoadDiffInputs {
     pub diff: PathBuf,
-    /// Override format (auto-detected when `None`). Only TriG and N-Quads
-    /// carry the named-graph information needed to recover side membership.
     pub format: Option<InputFormat>,
-    /// Optional explicit graph IRIs. If unset, they are inferred from the
-    /// two distinct named graphs encountered in the diff file.
     pub graph_a: Option<String>,
     pub graph_b: Option<String>,
 }
@@ -106,7 +129,6 @@ fn open_writer(out: Option<&Path>) -> Result<Box<dyn Write>> {
     })
 }
 
-/// Trait-object-friendly quad sink so we can pick the serializer at runtime.
 trait QuadSink {
     fn write(&mut self, quad: &Quad) -> Result<()>;
     fn finish(self: Box<Self>) -> Result<()>;
@@ -167,8 +189,6 @@ fn make_sink(
     })
 }
 
-/// Merge prefix lists from file A and file B. Prefixes from A are kept as-is;
-/// any prefix name from B that is not already declared by A is appended.
 fn merge_prefixes(a: Vec<(String, String)>, b: Vec<(String, String)>) -> Vec<(String, String)> {
     let mut seen: HashSet<String> = HashSet::with_capacity(a.len() + b.len());
     let mut out: Vec<(String, String)> = Vec::with_capacity(a.len() + b.len());
@@ -189,7 +209,15 @@ fn make_quad(t: Triple, g: &GraphName) -> Quad {
     }
 }
 
-/// Compute the diff between two RDF files into a [`DiffResult`].
+/// Canonicalise `quads` in place using RDFC-1.0 (oxrdf, `rdfc-10` feature).
+/// The blank-node identifiers in the returned vector are stable canonical
+/// labels (`_:c14n…`) determined by the graph's structure.
+fn canonicalize_quads(quads: Vec<Quad>) -> Vec<Quad> {
+    let mut dataset: Dataset = quads.into_iter().collect();
+    dataset.canonicalize(CanonicalizationAlgorithm::Unstable);
+    dataset.iter().map(Quad::from).collect()
+}
+
 pub fn compute_diff(inputs: &DiffInputs) -> Result<DiffResult> {
     let fmt_a = detect_or_override(&inputs.file_a, inputs.format_a)?;
     let fmt_b = detect_or_override(&inputs.file_b, inputs.format_b)?;
@@ -200,7 +228,104 @@ pub fn compute_diff(inputs: &DiffInputs) -> Result<DiffResult> {
         inputs.graph_a.as_deref(),
         inputs.graph_b.as_deref(),
     )?;
+    let quad_mode = is_quad_format(fmt_a) || is_quad_format(fmt_b);
 
+    if inputs.ignore_blank_nodes {
+        return compute_diff_skip_bnodes(inputs, fmt_a, fmt_b, &graph_a, &graph_b, quad_mode);
+    }
+
+    let mut quads_a: Vec<Quad> = Vec::new();
+    let reader_a = open_reader(&inputs.file_a)?;
+    let outcome_a = parse_quads(reader_a, fmt_a, |q| {
+        quads_a.push(q);
+        Ok(())
+    })
+    .with_context(|| format!("while parsing {}", inputs.file_a.display()))?;
+
+    let mut quads_b: Vec<Quad> = Vec::new();
+    let reader_b = open_reader(&inputs.file_b)?;
+    let outcome_b = parse_quads(reader_b, fmt_b, |q| {
+        quads_b.push(q);
+        Ok(())
+    })
+    .with_context(|| format!("while parsing {}", inputs.file_b.display()))?;
+
+    if outcome_a.bnode_count > 0 || outcome_b.bnode_count > 0 {
+        // Per W3C RDFC-1.0: canonicalise each side independently, then
+        // perform a syntactic set-diff on the resulting quads. Identical
+        // sub-graphs receive identical canonical bnode labels and therefore
+        // compare equal across sides.
+        quads_a = canonicalize_quads(quads_a);
+        quads_b = canonicalize_quads(quads_b);
+    }
+
+    let mut set: HashSet<Quad> = quads_a.into_iter().collect();
+    let mut b_only: Vec<Quad> = Vec::new();
+    for q in quads_b {
+        if !set.remove(&q) {
+            b_only.push(q);
+        }
+    }
+    let mut a_only: Vec<Quad> = set.into_iter().collect();
+
+    // In triple mode, statements parsed from triple inputs all carry
+    // `DefaultGraph`. Tag survivors with the per-side wrapper graph IRI
+    // *after* the set-diff so equal triples on both sides cancel.
+    if !quad_mode {
+        let g_a = GraphName::NamedNode(graph_a.clone());
+        let g_b = GraphName::NamedNode(graph_b.clone());
+        for q in &mut a_only {
+            if matches!(q.graph_name, GraphName::DefaultGraph) {
+                q.graph_name = g_a.clone();
+            }
+        }
+        for q in &mut b_only {
+            if matches!(q.graph_name, GraphName::DefaultGraph) {
+                q.graph_name = g_b.clone();
+            }
+        }
+    }
+
+    let prefixes = merge_prefixes(outcome_a.prefixes, outcome_b.prefixes);
+    let a_total = outcome_a.total;
+    let b_total = outcome_b.total;
+    let a_only_count = a_only.len() as u64;
+    let b_only_count = b_only.len() as u64;
+    let common = a_total.saturating_sub(a_only_count);
+
+    let stats = DiffStats {
+        a_total,
+        b_total,
+        common,
+        a_only: a_only_count,
+        b_only: b_only_count,
+        a_skipped_bnodes: 0,
+        b_skipped_bnodes: 0,
+    };
+
+    Ok(DiffResult {
+        a_only,
+        b_only,
+        prefixes,
+        graph_a,
+        graph_b,
+        stats,
+        source_a: Some(inputs.file_a.clone()),
+        source_b: Some(inputs.file_b.clone()),
+        format_a: Some(fmt_a),
+        format_b: Some(fmt_b),
+        quad_mode,
+    })
+}
+
+fn compute_diff_skip_bnodes(
+    inputs: &DiffInputs,
+    fmt_a: InputFormat,
+    fmt_b: InputFormat,
+    graph_a: &NamedNode,
+    graph_b: &NamedNode,
+    quad_mode: bool,
+) -> Result<DiffResult> {
     let mut set: HashSet<Triple> = HashSet::new();
     let reader_a = open_reader(&inputs.file_a)?;
     let outcome_a = parse_triples(reader_a, fmt_a, |t| {
@@ -222,15 +347,24 @@ pub fn compute_diff(inputs: &DiffInputs) -> Result<DiffResult> {
     let a_only_triples: Vec<Triple> = set.into_iter().collect();
     let prefixes = merge_prefixes(outcome_a.prefixes, outcome_b.prefixes);
 
-    let a_total = outcome_a.total;
-    let b_total = outcome_b.total;
     let a_only_count = a_only_triples.len() as u64;
     let b_only_count = b_only_triples.len() as u64;
-    let common = a_total.saturating_sub(a_only_count);
+    let common = outcome_a.total.saturating_sub(a_only_count);
+
+    let g_a = GraphName::NamedNode(graph_a.clone());
+    let g_b = GraphName::NamedNode(graph_b.clone());
+    let a_only: Vec<Quad> = a_only_triples
+        .into_iter()
+        .map(|t| make_quad(t, &g_a))
+        .collect();
+    let b_only: Vec<Quad> = b_only_triples
+        .into_iter()
+        .map(|t| make_quad(t, &g_b))
+        .collect();
 
     let stats = DiffStats {
-        a_total,
-        b_total,
+        a_total: outcome_a.total,
+        b_total: outcome_b.total,
         common,
         a_only: a_only_count,
         b_only: b_only_count,
@@ -239,37 +373,82 @@ pub fn compute_diff(inputs: &DiffInputs) -> Result<DiffResult> {
     };
 
     Ok(DiffResult {
-        a_only: a_only_triples,
-        b_only: b_only_triples,
+        a_only,
+        b_only,
         prefixes,
-        graph_a,
-        graph_b,
+        graph_a: graph_a.clone(),
+        graph_b: graph_b.clone(),
         stats,
         source_a: Some(inputs.file_a.clone()),
         source_b: Some(inputs.file_b.clone()),
         format_a: Some(fmt_a),
         format_b: Some(fmt_b),
+        quad_mode,
     })
 }
 
-/// Serialize a [`DiffResult`] to the given destination using the chosen format.
+/// Derive per-side output paths for a quad-mode diff. Given `out =
+/// "diff.trig"`, returns `("diff-a.trig", "diff-b.trig")`.
+fn split_output_paths(out: &Path) -> (PathBuf, PathBuf) {
+    let stem = out
+        .file_stem()
+        .and_then(OsStr::to_str)
+        .unwrap_or("diff")
+        .to_string();
+    let ext = out
+        .extension()
+        .and_then(OsStr::to_str)
+        .map(|e| format!(".{e}"))
+        .unwrap_or_default();
+    let parent = out.parent();
+    let make = |suffix: &str| {
+        let name = format!("{stem}-{suffix}{ext}");
+        match parent {
+            Some(p) if !p.as_os_str().is_empty() => p.join(name),
+            _ => PathBuf::from(name),
+        }
+    };
+    (make("a"), make("b"))
+}
+
 pub fn write_diff(result: &DiffResult, out: Option<&Path>, format: OutputFormat) -> Result<()> {
+    if result.quad_mode {
+        let Some(out_path) = out else {
+            bail!(
+                "quad-shaped inputs (N-Quads/TriG) require --output: two files \
+                 are written (one per side) to preserve the source named graphs"
+            );
+        };
+        let (path_a, path_b) = split_output_paths(out_path);
+
+        let writer_a = open_writer(Some(&path_a))?;
+        let mut sink_a = make_sink(format, writer_a, &result.prefixes)?;
+        for q in &result.a_only {
+            sink_a.write(q)?;
+        }
+        sink_a.finish()?;
+
+        let writer_b = open_writer(Some(&path_b))?;
+        let mut sink_b = make_sink(format, writer_b, &result.prefixes)?;
+        for q in &result.b_only {
+            sink_b.write(q)?;
+        }
+        sink_b.finish()?;
+        return Ok(());
+    }
+
     let writer = open_writer(out)?;
     let mut sink = make_sink(format, writer, &result.prefixes)?;
-
-    let graph_b_name = GraphName::NamedNode(result.graph_b.clone());
-    for t in &result.b_only {
-        sink.write(&make_quad(t.clone(), &graph_b_name))?;
+    for q in &result.b_only {
+        sink.write(q)?;
     }
-    let graph_a_name = GraphName::NamedNode(result.graph_a.clone());
-    for t in &result.a_only {
-        sink.write(&make_quad(t.clone(), &graph_a_name))?;
+    for q in &result.a_only {
+        sink.write(q)?;
     }
     sink.finish()?;
     Ok(())
 }
 
-/// Backwards-compatible end-to-end runner: parse, compute diff, write output.
 pub fn run_diff(args: &crate::cli::Args) -> Result<DiffStats> {
     let inputs = DiffInputs {
         file_a: args
@@ -280,18 +459,18 @@ pub fn run_diff(args: &crate::cli::Args) -> Result<DiffStats> {
             .file_b
             .clone()
             .ok_or_else(|| anyhow::anyhow!("<FILE_B> is required"))?,
-
         format_a: args.format_a,
         format_b: args.format_b,
         graph_a: args.graph_a.clone(),
         graph_b: args.graph_b.clone(),
+        ignore_blank_nodes: args.ignore_blank_nodes,
     };
     let result = compute_diff(&inputs)?;
     write_diff(&result, args.output.as_deref(), args.output_format)?;
     Ok(result.stats)
 }
 
-/// Stream-iterate the common triples of two RDF files. Memory cost ≈ |A|.
+/// Stream-iterate the bnode-free common triples of two RDF files.
 pub fn stream_common_triples<F: FnMut(&Triple) -> Result<()>>(
     file_a: &Path,
     file_b: &Path,
@@ -321,7 +500,8 @@ pub fn stream_common_triples<F: FnMut(&Triple) -> Result<()>>(
     Ok(())
 }
 
-/// Load a previously-written diff file (TriG or N-Quads).
+/// Load a previously-written diff file (TriG or N-Quads). Expects the
+/// triple-mode topology: a single document with two named graphs.
 pub fn load_diff_file(inputs: &LoadDiffInputs) -> Result<DiffResult> {
     let fmt = detect_or_override(&inputs.diff, inputs.format)?;
     let mut prefixes: Vec<(String, String)> = Vec::new();
@@ -378,29 +558,12 @@ pub fn load_diff_file(inputs: &LoadDiffInputs) -> Result<DiffResult> {
         }
     };
 
-    let mut a_only: Vec<Triple> = Vec::new();
-    let mut b_only: Vec<Triple> = Vec::new();
-    let mut a_skipped: u64 = 0;
-    let mut b_skipped: u64 = 0;
+    let mut a_only: Vec<Quad> = Vec::new();
+    let mut b_only: Vec<Quad> = Vec::new();
     for q in quads {
-        let t = Triple::new(q.subject, q.predicate, q.object);
-        let bnode = matches!(t.subject, oxrdf::NamedOrBlankNode::BlankNode(_))
-            || matches!(t.object, oxrdf::Term::BlankNode(_));
         match &q.graph_name {
-            GraphName::NamedNode(g) if g == &graph_a => {
-                if bnode {
-                    a_skipped += 1;
-                } else {
-                    a_only.push(t);
-                }
-            }
-            GraphName::NamedNode(g) if g == &graph_b => {
-                if bnode {
-                    b_skipped += 1;
-                } else {
-                    b_only.push(t);
-                }
-            }
+            GraphName::NamedNode(g) if g == &graph_a => a_only.push(q),
+            GraphName::NamedNode(g) if g == &graph_b => b_only.push(q),
             _ => {}
         }
     }
@@ -411,8 +574,8 @@ pub fn load_diff_file(inputs: &LoadDiffInputs) -> Result<DiffResult> {
         common: 0,
         a_only: a_only.len() as u64,
         b_only: b_only.len() as u64,
-        a_skipped_bnodes: a_skipped,
-        b_skipped_bnodes: b_skipped,
+        a_skipped_bnodes: 0,
+        b_skipped_bnodes: 0,
     };
 
     Ok(DiffResult {
@@ -426,6 +589,7 @@ pub fn load_diff_file(inputs: &LoadDiffInputs) -> Result<DiffResult> {
         source_b: None,
         format_a: None,
         format_b: None,
+        quad_mode: false,
     })
 }
 
@@ -452,6 +616,7 @@ mod tests {
             format_b: None,
             graph_a: None,
             graph_b: None,
+            ignore_blank_nodes: false,
         };
         let computed = compute_diff(&inputs).unwrap();
 
@@ -467,10 +632,10 @@ mod tests {
         })
         .unwrap();
 
-        let computed_a: HashSet<&Triple> = computed.a_only.iter().collect();
-        let computed_b: HashSet<&Triple> = computed.b_only.iter().collect();
-        let loaded_a: HashSet<&Triple> = loaded.a_only.iter().collect();
-        let loaded_b: HashSet<&Triple> = loaded.b_only.iter().collect();
+        let computed_a: HashSet<Triple> = computed.a_only_triples().collect();
+        let computed_b: HashSet<Triple> = computed.b_only_triples().collect();
+        let loaded_a: HashSet<Triple> = loaded.a_only_triples().collect();
+        let loaded_b: HashSet<Triple> = loaded.b_only_triples().collect();
         assert_eq!(computed_a, loaded_a);
         assert_eq!(computed_b, loaded_b);
     }

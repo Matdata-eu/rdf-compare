@@ -72,6 +72,12 @@ pub struct Args {
     /// Bind address for the web viewer.
     #[arg(long, default_value = "127.0.0.1:0")]
     pub bind: String,
+
+    /// Skip blank-node-bearing triples instead of canonicalising them.
+    /// By default, when blank nodes are present, the W3C RDFC-1.0 algorithm is
+    /// used to assign stable labels before diffing.
+    #[arg(long = "ignore-blank-nodes")]
+    pub ignore_blank_nodes: bool,
 }
 
 /// Arguments accepted by `rdf-compare serve`.
@@ -104,6 +110,9 @@ pub struct ServeArgs {
     /// Do not auto-open the system browser.
     #[arg(long = "no-open")]
     pub no_open: bool,
+    /// Skip blank-node-bearing triples instead of canonicalising them.
+    #[arg(long = "ignore-blank-nodes")]
+    pub ignore_blank_nodes: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]

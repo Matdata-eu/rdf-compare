@@ -1,0 +1,7 @@
+@prefix ex: <http://example.org/> .
+<urn:rdf-compare:source:bnode-iso-b> {
+	_:c14n0 ex:name "BobX" .
+}
+<urn:rdf-compare:source:bnode-iso-a> {
+	_:c14n0 ex:name "Bob" .
+}

@@ -37,6 +37,7 @@ fn run_default(args: Args) -> ExitCode {
         format_b: args.format_b,
         graph_a: args.graph_a.clone(),
         graph_b: args.graph_b.clone(),
+        ignore_blank_nodes: args.ignore_blank_nodes,
     };
     match compute_diff(&inputs).and_then(|r| {
         write_diff(&r, args.output.as_deref(), args.output_format)?;
@@ -69,6 +70,7 @@ fn run_view(args: Args) -> ExitCode {
         format_b: args.format_b,
         graph_a: args.graph_a.clone(),
         graph_b: args.graph_b.clone(),
+        ignore_blank_nodes: args.ignore_blank_nodes,
     };
     let result = match compute_diff(&inputs) {
         Ok(r) => r,
@@ -114,6 +116,7 @@ fn run_serve(s: ServeArgs) -> ExitCode {
             format_b: s.format_b,
             graph_a: s.graph_a,
             graph_b: s.graph_b,
+            ignore_blank_nodes: s.ignore_blank_nodes,
         }
     } else {
         Preload::None
