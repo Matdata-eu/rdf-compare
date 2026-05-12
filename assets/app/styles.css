@@ -18,6 +18,7 @@ body { display: flex; flex-direction: column; }
 
 header { padding: 0.6rem 1rem; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; background: #fff; }
 header h1 { margin: 0; font-size: 1.05rem; font-weight: 600; }
+.version { font-size: 0.75rem; font-weight: 400; color: var(--muted); }
 .meta { color: var(--muted); font-size: 0.85rem; flex: 1; }
 .controls { display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap; }
 .legend { display: inline-flex; align-items: center; gap: 0.3rem; font-size: 0.85rem; cursor: help; }

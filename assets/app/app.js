@@ -297,6 +297,8 @@
   async function init() {
     buildTable();
     const meta = await loadMeta();
+    const versionEl = document.getElementById("version");
+    if (versionEl && meta.version) versionEl.textContent = `v${meta.version}`;
     renderMeta();
 
     if (!meta.loaded) {

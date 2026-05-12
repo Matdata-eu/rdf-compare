@@ -61,6 +61,7 @@ struct StatsDto {
 
 #[derive(Serialize)]
 struct MetaDto {
+    version: &'static str,
     loaded: bool,
     from_diff_file: bool,
     graph_a: Option<String>,
@@ -73,6 +74,7 @@ async fn meta(State(s): State<AppState>) -> Json<MetaDto> {
     let guard = s.data.lock().await;
     match guard.as_ref() {
         None => Json(MetaDto {
+            version: env!("CARGO_PKG_VERSION"),
             loaded: false,
             from_diff_file: false,
             graph_a: None,
@@ -81,6 +83,7 @@ async fn meta(State(s): State<AppState>) -> Json<MetaDto> {
             prefixes: vec![],
         }),
         Some(d) => Json(MetaDto {
+            version: env!("CARGO_PKG_VERSION"),
             loaded: true,
             from_diff_file: d.source_a.is_none() && d.source_b.is_none(),
             graph_a: Some(d.graph_a.as_str().to_string()),
