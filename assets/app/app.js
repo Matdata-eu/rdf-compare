@@ -145,14 +145,15 @@
       virtualDom: true,
       virtualDomBuffer: 600,
       placeholder: "No rows",
+      initialSort: [
+        { column: "o", dir: "asc" },
+        { column: "p", dir: "asc" },
+        { column: "s", dir: "asc" },
+      ],
       rowFormatter: function (row) {
         row.getElement().classList.remove("row-added", "row-deleted", "row-common");
         row.getElement().classList.add(rowClass(row));
       },
-      initialSort: [
-        { column: "s", dir: "asc" },
-        { column: "p", dir: "asc" },
-      ],
       columns: [
         {
           title: "Action",
