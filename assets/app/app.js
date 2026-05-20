@@ -5,7 +5,7 @@
     table: null,
     meta: null,
     diffLoaded: false,
-    commonShown: false,
+    commonLoaded: false,
     wktSelection: new Set(), // wkt literal strings currently shown on the map
   };
 
@@ -14,7 +14,7 @@
     table: document.getElementById("table"),
     empty: document.getElementById("empty-state"),
     loader: document.getElementById("loader"),
-    showCommon: document.getElementById("show-common"),
+    tripleView: document.getElementById("triple-view"),
     openLoad: document.getElementById("open-load"),
     doLoad: document.getElementById("do-load"),
     pathA: document.getElementById("path-a"),
@@ -87,8 +87,10 @@
 
   function actionFormatter(cell) {
     const v = cell.getValue();
-    if (v === "+") return '<span class="badge added" title="Added in B">+</span>';
-    if (v === "-") return '<span class="badge deleted" title="Removed from A">−</span>';
+    const nameA = escapeHtml((state.meta && state.meta.graph_a) || "A");
+    const nameB = escapeHtml((state.meta && state.meta.graph_b) || "B");
+    if (v === "+") return `<span class="badge added" title="Triple present in ${nameB} but not in ${nameA}">+</span>`;
+    if (v === "-") return `<span class="badge deleted" title="Triple present in ${nameA} but not in ${nameB}">−</span>`;
     return '<span class="badge common" title="Present in both">=</span>';
   }
 
@@ -259,10 +261,19 @@
       return;
     }
     const s = state.meta.stats || {};
-    els.meta.textContent =
-      `A=${state.meta.graph_a} (${s.a_total ?? "?"} triples)` +
-      ` · B=${state.meta.graph_b} (${s.b_total ?? "?"})` +
-      ` · +${s.b_only ?? 0} −${s.a_only ?? 0}`;
+    const nameA = escapeHtml(state.meta.graph_a || "");
+    const nameB = escapeHtml(state.meta.graph_b || "");
+    els.meta.innerHTML =
+      `A=${nameA} (${s.a_total ?? "?"} triples)` +
+      ` · B=${nameB} (${s.b_total ?? "?"})` +
+      ` · <span class="count-added">+${s.b_only ?? 0}</span>` +
+      ` <span class="count-removed">−${s.a_only ?? 0}</span>`;
+    const legendAdded = document.getElementById("legend-added");
+    const legendDeleted = document.getElementById("legend-deleted");
+    const rawA = state.meta.graph_a || "A";
+    const rawB = state.meta.graph_b || "B";
+    if (legendAdded) legendAdded.title = `Triple present in ${rawB} but not in ${rawA}`;
+    if (legendDeleted) legendDeleted.title = `Triple present in ${rawA} but not in ${rawB}`;
   }
 
   async function loadDiffRows() {
@@ -273,7 +284,11 @@
       if (rows.length > 0) {
         els.overlayMsg.textContent = `Rendering ${rows.length.toLocaleString()} rows\u2026`;
         await new Promise(r => setTimeout(r, 0));
-        await state.table.setData(rows);
+        if (state.commonLoaded) {
+          await state.table.addData(rows);
+        } else {
+          await state.table.setData(rows);
+        }
       }
       state.diffLoaded = true;
     } finally {
@@ -282,16 +297,67 @@
   }
 
   async function loadCommonRows() {
+    if (state.commonLoaded) return;
     showLoading("Loading common rows\u2026");
     try {
       const rows = await streamRows("/api/rows?include=common", "=");
       if (rows.length > 0) {
         els.overlayMsg.textContent = `Rendering ${rows.length.toLocaleString()} rows\u2026`;
         await new Promise(r => setTimeout(r, 0));
-        await state.table.addData(rows);
+        if (state.diffLoaded) {
+          await state.table.addData(rows);
+        } else {
+          await state.table.setData(rows);
+        }
       }
+      state.commonLoaded = true;
     } finally {
       hideLoading();
+    }
+  }
+
+  function applyViewFilter(mode) {
+    state.table.clearFilter(false);
+    if (mode === "only-diff") {
+      state.table.setFilter("a", "!=", "=");
+    } else if (mode === "only-common") {
+      state.table.setFilter("a", "=", "=");
+    } else if (mode === "only-added") {
+      state.table.setFilter("a", "=", "+");
+    } else if (mode === "only-removed") {
+      state.table.setFilter("a", "=", "-");
+    }
+    // "diff-and-common" → no additional filter
+  }
+
+  async function applyViewMode(mode) {
+    const needsDiff = mode !== "only-common";
+    const needsCommon = mode === "diff-and-common" || mode === "only-common";
+    els.tripleView.disabled = true;
+    els.commonError.classList.add("hidden");
+    try {
+      if (needsDiff && !state.diffLoaded) await loadDiffRows();
+      if (needsCommon && !state.commonLoaded) await loadCommonRows();
+      applyViewFilter(mode);
+    } catch (e) {
+      console.error("Failed to load rows:", e);
+      els.commonError.textContent = e.message;
+      els.commonError.classList.remove("hidden");
+      els.tripleView.value = "only-diff";
+      applyViewFilter("only-diff");
+    } finally {
+      els.tripleView.disabled = false;
+    }
+  }
+
+  function setCommonOptionsDisabled(disabled) {
+    for (const opt of els.tripleView.options) {
+      if (opt.value === "diff-and-common" || opt.value === "only-common") {
+        opt.disabled = disabled;
+      }
+    }
+    if (disabled && (els.tripleView.value === "diff-and-common" || els.tripleView.value === "only-common")) {
+      els.tripleView.value = "only-diff";
     }
   }
 
@@ -309,11 +375,11 @@
     }
 
     if (meta.from_diff_file) {
-      els.showCommon.disabled = true;
-      els.showCommon.parentElement.title = "Common triples unavailable when loading a diff file";
+      setCommonOptionsDisabled(true);
+      els.tripleView.title = "Common triples unavailable when loading a diff file";
     }
 
-    await loadDiffRows();
+    await applyViewMode(els.tripleView.value);
   }
 
   els.openLoad.addEventListener("click", () => els.loader.classList.toggle("hidden"));
@@ -336,48 +402,22 @@
       if (!r.ok) throw new Error(await r.text());
       els.loaderMsg.textContent = "Loaded.";
       state.diffLoaded = false;
-      state.commonShown = false;
-      els.showCommon.checked = false;
+      state.commonLoaded = false;
       state.table.clearData();
       const meta = await loadMeta();
       renderMeta();
       els.empty.classList.add("hidden");
       els.loader.classList.add("hidden");
-      if (meta.from_diff_file) {
-        els.showCommon.disabled = true;
-      } else {
-        els.showCommon.disabled = false;
-      }
-      await loadDiffRows();
+      setCommonOptionsDisabled(!!meta.from_diff_file);
+      els.tripleView.title = meta.from_diff_file ? "Common triples unavailable when loading a diff file" : "";
+      await applyViewMode(els.tripleView.value);
     } catch (e) {
       els.loaderMsg.textContent = "Error: " + e.message;
     }
   });
 
-  els.showCommon.addEventListener("change", async () => {
-    if (els.showCommon.checked && !state.commonShown) {
-      els.showCommon.disabled = true;
-      els.commonError.classList.add("hidden");
-      try {
-        await loadCommonRows();
-        state.commonShown = true;
-      } catch (e) {
-        console.error("Failed to load common rows:", e);
-        els.showCommon.checked = false;
-        els.commonError.textContent = e.message;
-        els.commonError.classList.remove("hidden");
-      } finally {
-        els.showCommon.disabled = false;
-      }
-    } else if (!els.showCommon.checked && state.commonShown) {
-      els.commonError.classList.add("hidden");
-      // remove common rows in place
-      const rows = state.table.getRows();
-      for (const r of rows) {
-        if (r.getData().a === "=") r.delete();
-      }
-      state.commonShown = false;
-    }
+  els.tripleView.addEventListener("change", () => {
+    applyViewMode(els.tripleView.value);
   });
 
   init().catch((e) => {

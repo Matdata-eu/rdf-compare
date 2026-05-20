@@ -13,11 +13,17 @@
       <h1>rdf-compare <span id="version" class="version"></span></h1>
       <div id="meta" class="meta"></div>
       <div class="controls">
-        <label class="legend"><span class="badge added" title="Triple present in B but not in A">+ Added</span></label>
-        <label class="legend"><span class="badge deleted" title="Triple present in A but not in B">− Deleted</span></label>
-        <label class="legend common-toggle">
-          <input type="checkbox" id="show-common" />
-          <span>Show common triples</span>
+        <label class="legend"><span id="legend-added" class="badge added" title="Triple present in B but not in A">+ Added</span></label>
+        <label class="legend"><span id="legend-deleted" class="badge deleted" title="Triple present in A but not in B">− Deleted</span></label>
+        <label class="legend triple-view-label">
+          <span>Triples to show:</span>
+          <select id="triple-view">
+            <option value="only-diff" selected>Only diff</option>
+            <option value="diff-and-common">Diff + common</option>
+            <option value="only-common">Only common</option>
+            <option value="only-added">Only added</option>
+            <option value="only-removed">Only removed</option>
+          </select>
           <span id="common-error" class="error-msg hidden"></span>
         </label>
         <button id="open-load" class="ghost">Load files…</button>
