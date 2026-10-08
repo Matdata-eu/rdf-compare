@@ -32,13 +32,14 @@
     </header>
     <main>
       <div id="empty-state" class="empty hidden">
-        <p>No diff loaded. Use <code>--file-a</code>/<code>--file-b</code> on the CLI or the loader below.</p>
+        <p>No diff loaded. Use <code>--file-a</code>/<code>--file-b</code> on the CLI, the loader below, or a URL such as <code>/?a=old.ttl&amp;b=new.ttl</code>.</p>
       </div>
       <div id="loader" class="loader hidden">
         <h2>Load RDF files</h2>
-        <label>File A path <input id="path-a" type="text" placeholder="/path/to/a.ttl" /></label>
-        <label>File B path <input id="path-b" type="text" placeholder="/path/to/b.ttl" /></label>
-        <label>Or diff file <input id="path-diff" type="text" placeholder="/path/to/diff.trig" /></label>
+        <label>File A path <input id="path-a" type="text" list="rdf-files" placeholder="/path/to/a.ttl" /></label>
+        <label>File B path <input id="path-b" type="text" list="rdf-files" placeholder="/path/to/b.ttl" /></label>
+        <label>Or diff file <input id="path-diff" type="text" list="rdf-files" placeholder="/path/to/diff.trig" /></label>
+        <datalist id="rdf-files"></datalist>
         <button id="do-load">Load</button>
         <div id="loader-msg"></div>
       </div>

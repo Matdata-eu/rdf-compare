@@ -1,0 +1,7 @@
+target
+.git
+.github
+*.png
+*.trig
+*.ttl
+tests

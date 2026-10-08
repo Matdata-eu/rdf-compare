@@ -2,19 +2,57 @@
 
 pub mod api;
 pub mod assets;
+pub mod cache;
 
 use crate::cli::InputFormat;
 use crate::diff::{DiffResult, compute_diff, load_diff_file};
 use anyhow::{Context, Result};
+use cache::DiffCache;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::Mutex;
+
+/// Default number of diffs kept in memory by the viewer.
+pub const DEFAULT_CACHE_SIZE: usize = 4;
 
 /// Shared application state.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct AppState {
-    pub data: Arc<Mutex<Option<Arc<DiffResult>>>>,
+    /// Diff preloaded from the command line, shown when the page URL names
+    /// no files.
+    pub default: Option<Arc<DiffResult>>,
+    /// Diffs requested through the page URL (`?a=…&b=…` or `?diff=…`).
+    pub cache: Arc<DiffCache>,
+    /// When set, URL paths resolve relative to this (canonical) directory,
+    /// paths outside it are rejected, and `/api/files` lists the RDF files
+    /// found under it.
+    pub data_dir: Option<Arc<PathBuf>>,
+}
+
+impl Default for AppState {
+    fn default() -> Self {
+        Self {
+            default: None,
+            cache: Arc::new(DiffCache::new(DEFAULT_CACHE_SIZE)),
+            data_dir: None,
+        }
+    }
+}
+
+/// Server options that do not depend on what is preloaded.
+#[derive(Debug, Clone)]
+pub struct ServeConfig {
+    pub data_dir: Option<PathBuf>,
+    pub cache_size: usize,
+}
+
+impl Default for ServeConfig {
+    fn default() -> Self {
+        Self {
+            data_dir: None,
+            cache_size: DEFAULT_CACHE_SIZE,
+        }
+    }
 }
 
 /// Server lifecycle wrapper.
@@ -52,12 +90,12 @@ pub enum Preload {
 }
 
 pub async fn build_state(preload: Preload) -> Result<AppState> {
-    let state = AppState::default();
+    let mut state = AppState::default();
     match preload {
         Preload::None => {}
         Preload::Loaded(mut d) => {
             d.sort_rows();
-            *state.data.lock().await = Some(Arc::new(*d));
+            state.default = Some(Arc::new(*d));
         }
         Preload::Files {
             file_a,
@@ -81,7 +119,7 @@ pub async fn build_state(preload: Preload) -> Result<AppState> {
                 .await
                 .context("diff task panicked")??;
             result.sort_rows();
-            *state.data.lock().await = Some(Arc::new(result));
+            state.default = Some(Arc::new(result));
         }
         Preload::Diff {
             diff,
@@ -99,7 +137,7 @@ pub async fn build_state(preload: Preload) -> Result<AppState> {
                 .await
                 .context("load task panicked")??;
             result.sort_rows();
-            *state.data.lock().await = Some(Arc::new(result));
+            state.default = Some(Arc::new(result));
         }
     }
     Ok(state)
@@ -122,27 +160,55 @@ pub async fn start(bind: &str, state: AppState) -> Result<Server> {
 
 /// Synchronous helper used by `main.rs`. Builds a current-thread Tokio runtime,
 /// starts the server, optionally opens the browser, and blocks until ctrl-c.
-pub fn run_blocking(bind: &str, open: bool, preload: Preload) -> Result<()> {
+pub fn run_blocking(bind: &str, open: bool, config: ServeConfig, preload: Preload) -> Result<()> {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .context("failed to build tokio runtime")?;
     rt.block_on(async move {
-        let state = build_state(preload).await?;
+        let mut state = build_state(preload).await?;
+        state.cache = Arc::new(DiffCache::new(config.cache_size));
+        if let Some(dir) = config.data_dir {
+            let dir = dir
+                .canonicalize()
+                .with_context(|| format!("data directory {} not found", dir.display()))?;
+            eprintln!("serving RDF files from {}", dir.display());
+            state.data_dir = Some(Arc::new(dir));
+        }
         let server = start(bind, state).await?;
         let url = format!("http://{}/", server.addr);
         eprintln!("rdf-compare viewer listening on {url}");
         if open && let Err(e) = webbrowser::open(&url) {
             eprintln!("could not open browser: {e}");
         }
-        // wait for ctrl-c or server task end
+        // wait for ctrl-c / SIGTERM or server task end
         tokio::select! {
-            r = tokio::signal::ctrl_c() => {
-                r.context("ctrl-c handler failed")?;
+            r = shutdown_signal() => {
+                r?;
                 eprintln!("shutting down");
                 Ok::<(), anyhow::Error>(())
             }
             _ = server.handle => Ok(()),
         }
     })
+}
+
+/// Resolves on ctrl-c, or on SIGTERM on unix (sent by `docker stop` and
+/// Kubernetes when a pod is terminated).
+async fn shutdown_signal() -> Result<()> {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        let mut term = signal(SignalKind::terminate()).context("SIGTERM handler failed")?;
+        tokio::select! {
+            r = tokio::signal::ctrl_c() => r.context("ctrl-c handler failed"),
+            _ = term.recv() => Ok(()),
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        tokio::signal::ctrl_c()
+            .await
+            .context("ctrl-c handler failed")
+    }
 }

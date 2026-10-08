@@ -10,10 +10,10 @@ use axum::body::Body;
 use axum::extract::{Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::{Html, IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::get;
 use oxrdf::{Quad, Term};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio_stream::StreamExt as _;
 use tokio_stream::wrappers::ReceiverStream;
@@ -26,7 +26,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/rows", get(rows))
         .route("/api/summary", get(summary))
         .route("/api/class-subjects", get(class_subjects))
-        .route("/api/load", post(load))
+        .route("/api/files", get(files))
         .with_state(state)
 }
 
@@ -72,9 +72,12 @@ struct MetaDto {
     prefixes: Vec<(String, String)>,
 }
 
-async fn meta(State(s): State<AppState>) -> Json<MetaDto> {
-    let guard = s.data.lock().await;
-    match guard.as_ref() {
+async fn meta(State(s): State<AppState>, Query(src): Query<SourceQuery>) -> Response {
+    let data = match diff_for(&s, src).await {
+        Ok(d) => d,
+        Err(e) => return e.into_response(),
+    };
+    match data.as_deref() {
         None => Json(MetaDto {
             version: env!("CARGO_PKG_VERSION"),
             loaded: false,
@@ -102,11 +105,15 @@ async fn meta(State(s): State<AppState>) -> Json<MetaDto> {
             prefixes: d.prefixes.clone(),
         }),
     }
+    .into_response()
 }
 
-async fn summary(State(s): State<AppState>) -> Response {
-    let guard = s.data.lock().await;
-    match guard.as_ref() {
+async fn summary(State(s): State<AppState>, Query(src): Query<SourceQuery>) -> Response {
+    let data = match diff_for(&s, src).await {
+        Ok(d) => d,
+        Err(e) => return e.into_response(),
+    };
+    match data.as_deref() {
         Some(d) => Json(&d.summary).into_response(),
         None => (StatusCode::CONFLICT, "no diff loaded").into_response(),
     }
@@ -120,9 +127,16 @@ struct ClassQuery {
 }
 
 /// Affected subjects of one class, for filtering the triple table.
-async fn class_subjects(State(s): State<AppState>, Query(q): Query<ClassQuery>) -> Response {
-    let guard = s.data.lock().await;
-    match guard.as_ref() {
+async fn class_subjects(
+    State(s): State<AppState>,
+    Query(q): Query<ClassQuery>,
+    Query(src): Query<SourceQuery>,
+) -> Response {
+    let data = match diff_for(&s, src).await {
+        Ok(d) => d,
+        Err(e) => return e.into_response(),
+    };
+    match data.as_deref() {
         Some(d) => {
             let empty = Vec::new();
             let subjects = d.summary.class_subjects.get(&q.class).unwrap_or(&empty);
@@ -219,9 +233,16 @@ pub fn render_diff_ndjson(data: &DiffResult) -> Vec<u8> {
     buf
 }
 
-async fn rows(State(s): State<AppState>, Query(q): Query<RowsQuery>) -> Response {
+async fn rows(
+    State(s): State<AppState>,
+    Query(q): Query<RowsQuery>,
+    Query(src): Query<SourceQuery>,
+) -> Response {
     let include = q.include.as_deref().unwrap_or("diff").to_string();
-    let data_arc = s.data.lock().await.clone();
+    let data_arc = match diff_for(&s, src).await {
+        Ok(d) => d,
+        Err(e) => return e.into_response(),
+    };
     let Some(data) = data_arc else {
         return (StatusCode::CONFLICT, "no diff loaded").into_response();
     };
@@ -299,10 +320,13 @@ async fn rows(State(s): State<AppState>, Query(q): Query<RowsQuery>) -> Response
     resp
 }
 
-#[derive(Deserialize)]
-struct LoadBody {
-    file_a: Option<PathBuf>,
-    file_b: Option<PathBuf>,
+/// Which diff a request is about, taken from the page URL's query string:
+/// `a` + `b` (two source files) or `diff` (a saved diff file). With none of
+/// them the diff preloaded from the command line is used.
+#[derive(Debug, Default, Deserialize)]
+pub struct SourceQuery {
+    a: Option<PathBuf>,
+    b: Option<PathBuf>,
     diff: Option<PathBuf>,
     graph_a: Option<String>,
     graph_b: Option<String>,
@@ -310,44 +334,155 @@ struct LoadBody {
     ignore_blank_nodes: bool,
 }
 
-async fn load(State(s): State<AppState>, Json(body): Json<LoadBody>) -> Response {
-    let result: anyhow::Result<DiffResult> = if let Some(diff) = body.diff {
-        let inputs = LoadDiffInputs {
-            diff,
-            format: None,
-            graph_a: body.graph_a,
-            graph_b: body.graph_b,
-        };
-        match tokio::task::spawn_blocking(move || load_diff_file(&inputs)).await {
-            Ok(r) => r,
-            Err(e) => Err(anyhow::anyhow!("task panic: {e}")),
-        }
-    } else if let (Some(a), Some(b)) = (body.file_a, body.file_b) {
-        let inputs = DiffInputs {
-            file_a: a,
-            file_b: b,
-            format_a: None,
-            format_b: None,
-            graph_a: body.graph_a,
-            graph_b: body.graph_b,
-            ignore_blank_nodes: body.ignore_blank_nodes,
-        };
-        match tokio::task::spawn_blocking(move || compute_diff(&inputs)).await {
-            Ok(r) => r,
-            Err(e) => Err(anyhow::anyhow!("task panic: {e}")),
-        }
-    } else {
-        return (StatusCode::BAD_REQUEST, "provide file_a+file_b or diff").into_response();
-    };
+/// Identifies a file's content for cache purposes: path, size and mtime.
+fn file_key(path: &Path) -> anyhow::Result<String> {
+    let md = std::fs::metadata(path).map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
+    let mtime = md
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    Ok(format!("{}|{}|{}", path.display(), md.len(), mtime))
+}
 
-    match result {
-        Ok(mut d) => {
-            d.sort_rows();
-            *s.data.lock().await = Some(Arc::new(d));
-            (StatusCode::OK, "ok").into_response()
+/// Resolve the diff named by `src`: `Ok(None)` when it names nothing and no
+/// diff was preloaded, an error status for bad parameters or failed diffs.
+async fn diff_for(
+    s: &AppState,
+    src: SourceQuery,
+) -> Result<Option<Arc<DiffResult>>, (StatusCode, String)> {
+    let bad = |e: anyhow::Error| (StatusCode::BAD_REQUEST, format!("{e:#}"));
+    let root = s.data_dir.as_deref().map(PathBuf::as_path);
+    let resolve = |p: &Path| resolve_in_data_dir(root, p).map_err(bad);
+    let opts = format!(
+        "{:?}|{:?}|{}",
+        src.graph_a, src.graph_b, src.ignore_blank_nodes
+    );
+    let (key, compute): (
+        String,
+        Box<dyn FnOnce() -> anyhow::Result<DiffResult> + Send>,
+    ) = match (src.a, src.b, src.diff) {
+        (None, None, None) => return Ok(s.default.clone()),
+        (None, None, Some(diff)) => {
+            let diff = resolve(&diff)?;
+            let key = format!("diff|{}|{opts}", file_key(&diff).map_err(bad)?);
+            let inputs = LoadDiffInputs {
+                diff,
+                format: None,
+                graph_a: src.graph_a,
+                graph_b: src.graph_b,
+            };
+            (key, Box::new(move || load_diff_file(&inputs)))
         }
-        Err(e) => (StatusCode::BAD_REQUEST, format!("{e:#}")).into_response(),
+        (Some(a), Some(b), None) => {
+            let (a, b) = (resolve(&a)?, resolve(&b)?);
+            let key = format!(
+                "files|{}|{}|{opts}",
+                file_key(&a).map_err(bad)?,
+                file_key(&b).map_err(bad)?
+            );
+            let inputs = DiffInputs {
+                file_a: a,
+                file_b: b,
+                format_a: None,
+                format_b: None,
+                graph_a: src.graph_a,
+                graph_b: src.graph_b,
+                ignore_blank_nodes: src.ignore_blank_nodes,
+            };
+            (key, Box::new(move || compute_diff(&inputs)))
+        }
+        _ => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "provide both `a` and `b`, or `diff` on its own".to_string(),
+            ));
+        }
+    };
+    s.cache
+        .get_or_compute(&key, compute)
+        .await
+        .map(Some)
+        .map_err(bad)
+}
+
+/// Resolve a user-supplied path against the data directory. Relative paths
+/// are joined onto it; the canonical result must stay inside it so `..` and
+/// symlinks cannot escape. Without a data directory the path is used as-is.
+pub fn resolve_in_data_dir(root: Option<&Path>, path: &Path) -> anyhow::Result<PathBuf> {
+    let Some(root) = root else {
+        return Ok(path.to_path_buf());
+    };
+    let joined = root.join(path);
+    let canonical = joined
+        .canonicalize()
+        .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
+    if !canonical.starts_with(root) {
+        anyhow::bail!("{} is outside the data directory", path.display());
     }
+    Ok(canonical)
+}
+
+const MAX_LISTED_FILES: usize = 10_000;
+const MAX_LIST_DEPTH: usize = 16;
+
+/// Recursively collect RDF files (by extension) under `root`, as paths
+/// relative to it, sorted.
+pub fn list_rdf_files(root: &Path) -> Vec<String> {
+    fn walk(root: &Path, dir: &Path, depth: usize, out: &mut Vec<String>) {
+        if depth > MAX_LIST_DEPTH || out.len() >= MAX_LISTED_FILES {
+            return;
+        }
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            if out.len() >= MAX_LISTED_FILES {
+                return;
+            }
+            let path = entry.path();
+            let name = entry.file_name();
+            // Skip hidden entries such as Kubernetes' `..data` volume symlinks.
+            if name.to_string_lossy().starts_with('.') {
+                continue;
+            }
+            let Ok(ft) = entry.file_type() else { continue };
+            if ft.is_dir() {
+                walk(root, &path, depth + 1, out);
+            } else if crate::cli::detect_format(&path).is_ok()
+                && let Ok(rel) = path.strip_prefix(root)
+            {
+                out.push(rel.to_string_lossy().replace('\\', "/"));
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(root, root, 0, &mut out);
+    out.sort();
+    out
+}
+
+#[derive(Serialize)]
+struct FilesDto {
+    enabled: bool,
+    files: Vec<String>,
+}
+
+async fn files(State(s): State<AppState>) -> Json<FilesDto> {
+    let Some(root) = s.data_dir.clone() else {
+        return Json(FilesDto {
+            enabled: false,
+            files: vec![],
+        });
+    };
+    let files = tokio::task::spawn_blocking(move || list_rdf_files(&root))
+        .await
+        .unwrap_or_default();
+    Json(FilesDto {
+        enabled: true,
+        files,
+    })
 }
 
 #[cfg(test)]
@@ -362,6 +497,27 @@ mod tests {
         p.push("fixtures");
         p.push(name);
         p
+    }
+
+    #[test]
+    fn data_dir_resolves_relative_and_rejects_escapes() {
+        let root = fixtures("").canonicalize().unwrap();
+        let ok = resolve_in_data_dir(Some(&root), Path::new("a.ttl")).unwrap();
+        assert_eq!(ok, root.join("a.ttl"));
+        let abs = resolve_in_data_dir(Some(&root), &root.join("b.ttl")).unwrap();
+        assert_eq!(abs, root.join("b.ttl"));
+        assert!(resolve_in_data_dir(Some(&root), Path::new("../cli.rs")).is_err());
+        assert!(resolve_in_data_dir(Some(&root), Path::new("/etc/passwd")).is_err());
+        assert!(resolve_in_data_dir(Some(&root), Path::new("missing.ttl")).is_err());
+    }
+
+    #[test]
+    fn lists_rdf_files_under_data_dir() {
+        let root = fixtures("").canonicalize().unwrap();
+        let files = list_rdf_files(&root);
+        assert!(files.contains(&"a.ttl".to_string()));
+        assert!(files.contains(&"quads-a.nq".to_string()));
+        assert!(files.windows(2).all(|w| w[0] <= w[1]));
     }
 
     #[test]

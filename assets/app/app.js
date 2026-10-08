@@ -33,6 +33,22 @@
     summarySubjects: document.getElementById("summary-subjects"),
   };
 
+  // The diff shown is named by the page URL (?a=…&b=… or ?diff=…), so a
+  // link opens the same diff for anyone and each tab can show its own.
+  const SOURCE_PARAMS = ["a", "b", "diff", "graph_a", "graph_b", "ignore_blank_nodes"];
+  const pageParams = new URLSearchParams(window.location.search);
+  const sourceParams = new URLSearchParams();
+  for (const k of SOURCE_PARAMS) {
+    if (pageParams.has(k)) sourceParams.set(k, pageParams.get(k));
+  }
+
+  function apiUrl(path, extra) {
+    const q = new URLSearchParams(sourceParams);
+    for (const [k, v] of Object.entries(extra || {})) q.set(k, v);
+    const qs = q.toString();
+    return qs ? `${path}?${qs}` : path;
+  }
+
   function showLoading(msg) {
     els.overlayMsg.textContent = msg || "Loading rows\u2026";
     els.overlay.classList.remove("hidden");
@@ -252,8 +268,8 @@
   }
 
   async function loadMeta() {
-    const resp = await fetch("/api/meta");
-    if (!resp.ok) throw new Error("/api/meta failed");
+    const resp = await fetch(apiUrl("/api/meta"));
+    if (!resp.ok) throw new Error((await resp.text()) || `/api/meta → ${resp.status}`);
     const meta = await resp.json();
     state.meta = meta;
     state.prefixes = (meta.prefixes || [])
@@ -318,7 +334,7 @@
     if (state.classFilter && state.classFilter.key === key) {
       state.classFilter = null;
     } else {
-      const url = key ? `/api/class-subjects?class=${encodeURIComponent(key)}` : "/api/class-subjects";
+      const url = apiUrl("/api/class-subjects", key ? { class: key } : {});
       const resp = await fetch(url);
       if (!resp.ok) throw new Error(`${url} → ${resp.status}`);
       state.classFilter = { key, subjects: new Set(await resp.json()) };
@@ -416,7 +432,7 @@
   }
 
   async function loadSummary() {
-    const resp = await fetch("/api/summary");
+    const resp = await fetch(apiUrl("/api/summary"));
     if (!resp.ok) {
       renderSummary(null);
       return;
@@ -428,7 +444,7 @@
     if (state.diffLoaded) return;
     showLoading("Loading diff rows\u2026");
     try {
-      const rows = await streamRows("/api/rows?include=diff", null);
+      const rows = await streamRows(apiUrl("/api/rows", { include: "diff" }), null);
       if (rows.length > 0) {
         els.overlayMsg.textContent = `Rendering ${rows.length.toLocaleString()} rows\u2026`;
         await new Promise(r => setTimeout(r, 0));
@@ -448,7 +464,7 @@
     if (state.commonLoaded) return;
     showLoading("Loading common rows\u2026");
     try {
-      const rows = await streamRows("/api/rows?include=common", "=");
+      const rows = await streamRows(apiUrl("/api/rows", { include: "common" }), "=");
       if (rows.length > 0) {
         els.overlayMsg.textContent = `Rendering ${rows.length.toLocaleString()} rows\u2026`;
         await new Promise(r => setTimeout(r, 0));
@@ -510,9 +526,45 @@
     }
   }
 
+  // When the server runs with --data-dir, offer the files found there as
+  // suggestions in the loader inputs (paths are relative to that directory).
+  async function loadFileList() {
+    try {
+      const resp = await fetch("/api/files");
+      if (!resp.ok) return;
+      const data = await resp.json();
+      if (!data.enabled) return;
+      const list = document.getElementById("rdf-files");
+      list.replaceChildren(...data.files.map((f) => {
+        const opt = document.createElement("option");
+        opt.value = f;
+        return opt;
+      }));
+      els.pathA.placeholder = "a.ttl (relative to the data directory)";
+      els.pathB.placeholder = "b.ttl (relative to the data directory)";
+      els.pathDiff.placeholder = "diff.trig (relative to the data directory)";
+    } catch (e) {
+      console.error("Failed to list files:", e);
+    }
+  }
+
   async function init() {
     buildTable();
-    const meta = await loadMeta();
+    loadFileList();
+    els.pathA.value = sourceParams.get("a") || "";
+    els.pathB.value = sourceParams.get("b") || "";
+    els.pathDiff.value = sourceParams.get("diff") || "";
+    if (sourceParams.toString()) showLoading("Computing diff\u2026");
+    let meta;
+    try {
+      meta = await loadMeta();
+    } catch (e) {
+      els.meta.textContent = "error: " + e.message;
+      els.loader.classList.remove("hidden");
+      return;
+    } finally {
+      hideLoading();
+    }
     const versionEl = document.getElementById("version");
     if (versionEl && meta.version) versionEl.textContent = `v${meta.version}`;
     renderMeta();
@@ -551,38 +603,23 @@
     setColumnFilter(tr.dataset.filterField, tr.dataset.filterValue);
   });
 
-  els.doLoad.addEventListener("click", async () => {
-    const body = {};
-    if (els.pathDiff.value.trim()) {
-      body.diff = els.pathDiff.value.trim();
+  // Loading navigates to the URL naming the new files, so the result can be
+  // bookmarked or shared and the back button returns to the previous diff.
+  els.doLoad.addEventListener("click", () => {
+    const q = new URLSearchParams();
+    const diff = els.pathDiff.value.trim();
+    const a = els.pathA.value.trim();
+    const b = els.pathB.value.trim();
+    if (diff) {
+      q.set("diff", diff);
+    } else if (a && b) {
+      q.set("a", a);
+      q.set("b", b);
     } else {
-      body.file_a = els.pathA.value.trim();
-      body.file_b = els.pathB.value.trim();
+      els.loaderMsg.textContent = "Enter both file paths, or a diff file.";
+      return;
     }
-    els.loaderMsg.textContent = "Loading…";
-    try {
-      const r = await fetch("/api/load", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      if (!r.ok) throw new Error(await r.text());
-      els.loaderMsg.textContent = "Loaded.";
-      state.diffLoaded = false;
-      state.commonLoaded = false;
-      state.classFilter = null;
-      state.table.clearData();
-      const meta = await loadMeta();
-      renderMeta();
-      await loadSummary();
-      els.empty.classList.add("hidden");
-      els.loader.classList.add("hidden");
-      setCommonOptionsDisabled(!!meta.from_diff_file);
-      els.tripleView.title = meta.from_diff_file ? "Common triples unavailable when loading a diff file" : "";
-      await applyViewMode(els.tripleView.value);
-    } catch (e) {
-      els.loaderMsg.textContent = "Error: " + e.message;
-    }
+    window.location.search = q.toString();
   });
 
   els.tripleView.addEventListener("change", () => {
