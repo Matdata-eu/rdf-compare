@@ -111,6 +111,7 @@ button.ghost.active { background: #eaeef2; }
 .summary .muted { color: var(--muted); }
 .summary tr.clickable { cursor: pointer; }
 .summary tr.clickable:hover { background: #f3f6fa; }
+.summary tr.clickable.active { background: #dbeafe; }
 .bar-cell { width: 80px; }
 .bar { display: flex; height: 8px; width: 80px; background: #eef1f4; border-radius: 2px; overflow: hidden; }
 .bar-added { background: var(--added-fg); }

@@ -186,7 +186,7 @@ common=1
 
 `--stats stats.json` writes a JSON summary next to the RDF diff. The web viewer
 shows the same data in a collapsible **Summary** panel above the triple table
-(click a predicate or subject there to filter the table on it).
+(click a predicate, class or subject there to filter the table on it; click it again to clear).
 
 ```json
 {

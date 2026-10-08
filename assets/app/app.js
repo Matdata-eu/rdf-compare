@@ -7,6 +7,7 @@
     diffLoaded: false,
     commonLoaded: false,
     wktSelection: new Set(), // wkt literal strings currently shown on the map
+    classFilter: null, // { key, subjects: Set } when the table is filtered on a class
   };
 
   const els = {
@@ -304,6 +305,30 @@
     return `<span title="${escapeHtml(iri)}">${escapeHtml(short || `<${iri}>`)}</span>`;
   }
 
+  // Untyped subjects are grouped under class `null`; "" stands for it in the DOM.
+  function classKey(c) {
+    return c === null || c === undefined ? "" : c;
+  }
+
+  function subjectInClass(data) {
+    return state.classFilter.subjects.has(data.s);
+  }
+
+  async function toggleClassFilter(key) {
+    if (state.classFilter && state.classFilter.key === key) {
+      state.classFilter = null;
+    } else {
+      const url = key ? `/api/class-subjects?class=${encodeURIComponent(key)}` : "/api/class-subjects";
+      const resp = await fetch(url);
+      if (!resp.ok) throw new Error(`${url} → ${resp.status}`);
+      state.classFilter = { key, subjects: new Set(await resp.json()) };
+    }
+    for (const tr of els.summaryClasses.querySelectorAll("tr[data-class]")) {
+      tr.classList.toggle("active", !!state.classFilter && tr.dataset.class === state.classFilter.key);
+    }
+    applyViewFilter(els.tripleView.value);
+  }
+
   function setColumnFilter(field, value) {
     if (!state.table) return;
     const current = state.table.getHeaderFilterValue(field);
@@ -355,7 +380,8 @@
       sum.classes
         .map(
           (c) =>
-            `<tr><td>${renderIriText(c.class)}</td>` +
+            `<tr class="clickable${state.classFilter && state.classFilter.key === classKey(c.class) ? " active" : ""}" data-class="${escapeHtml(classKey(c.class))}">` +
+            `<td>${renderIriText(c.class)}</td>` +
             `<td class="num added">${fmt(c.instances_added)}</td><td class="num removed">${fmt(c.instances_removed)}</td>` +
             `<td class="num">${fmt(c.subjects_affected)}</td>` +
             `<td class="num added">${fmt(c.triples_added)}</td><td class="num removed">${fmt(c.triples_removed)}</td>` +
@@ -440,14 +466,15 @@
 
   function applyViewFilter(mode) {
     state.table.clearFilter(false);
+    if (state.classFilter) state.table.addFilter(subjectInClass);
     if (mode === "only-diff") {
-      state.table.setFilter("a", "!=", "=");
+      state.table.addFilter("a", "!=", "=");
     } else if (mode === "only-common") {
-      state.table.setFilter("a", "=", "=");
+      state.table.addFilter("a", "=", "=");
     } else if (mode === "only-added") {
-      state.table.setFilter("a", "=", "+");
+      state.table.addFilter("a", "=", "+");
     } else if (mode === "only-removed") {
-      state.table.setFilter("a", "=", "-");
+      state.table.addFilter("a", "=", "-");
     }
     // "diff-and-common" → no additional filter
   }
@@ -514,6 +541,11 @@
   );
 
   els.summary.addEventListener("click", (e) => {
+    const classRow = e.target.closest("tr[data-class]");
+    if (classRow) {
+      toggleClassFilter(classRow.dataset.class).catch((err) => console.error("class filter failed:", err));
+      return;
+    }
     const tr = e.target.closest("tr[data-filter-field]");
     if (!tr) return;
     setColumnFilter(tr.dataset.filterField, tr.dataset.filterValue);
@@ -538,6 +570,7 @@
       els.loaderMsg.textContent = "Loaded.";
       state.diffLoaded = false;
       state.commonLoaded = false;
+      state.classFilter = null;
       state.table.clearData();
       const meta = await loadMeta();
       renderMeta();

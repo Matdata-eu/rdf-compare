@@ -28,6 +28,10 @@ pub struct DiffSummary {
     pub classes: Vec<ClassStats>,
     /// The [`TOP_SUBJECTS`] subjects with the most changed triples.
     pub top_subjects: Vec<SubjectChange>,
+    /// Affected subjects per class (`None` = untyped), used by the web viewer
+    /// to filter the triple table on a class. Not part of the JSON output.
+    #[serde(skip)]
+    pub class_subjects: HashMap<Option<String>, Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -205,8 +209,10 @@ impl SummaryBuilder {
         // Subjects.
         let (mut s_added, mut s_removed, mut s_modified) = (0u64, 0u64, 0u64);
         let mut classes: HashMap<Option<&NamedNode>, ClassStats> = HashMap::new();
+        let mut class_subjects: HashMap<Option<String>, Vec<String>> = HashMap::new();
         let mut subject_changes: Vec<SubjectChange> = Vec::with_capacity(subj_changes.len());
         for (s, &(added, removed)) in &subj_changes {
+            let subject = term_str(s);
             let status = status_of(s);
             match status {
                 Some(SubjectStatus::Added) => s_added += 1,
@@ -224,9 +230,13 @@ impl SummaryBuilder {
                 c.subjects_affected += 1;
                 c.triples_added += added;
                 c.triples_removed += removed;
+                class_subjects
+                    .entry(k.map(|c| c.as_str().to_string()))
+                    .or_default()
+                    .push(subject.clone());
             }
             subject_changes.push(SubjectChange {
-                subject: term_str(s),
+                subject,
                 added,
                 removed,
                 status,
@@ -307,6 +317,7 @@ impl SummaryBuilder {
             predicates,
             classes,
             top_subjects: subject_changes,
+            class_subjects,
         }
     }
 }
