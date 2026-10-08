@@ -361,8 +361,31 @@
     }
   }
 
+  // When the server runs with --data-dir, offer the files found there as
+  // suggestions in the loader inputs (paths are relative to that directory).
+  async function loadFileList() {
+    try {
+      const resp = await fetch("/api/files");
+      if (!resp.ok) return;
+      const data = await resp.json();
+      if (!data.enabled) return;
+      const list = document.getElementById("rdf-files");
+      list.replaceChildren(...data.files.map((f) => {
+        const opt = document.createElement("option");
+        opt.value = f;
+        return opt;
+      }));
+      els.pathA.placeholder = "a.ttl (relative to the data directory)";
+      els.pathB.placeholder = "b.ttl (relative to the data directory)";
+      els.pathDiff.placeholder = "diff.trig (relative to the data directory)";
+    } catch (e) {
+      console.error("Failed to list files:", e);
+    }
+  }
+
   async function init() {
     buildTable();
+    loadFileList();
     const meta = await loadMeta();
     const versionEl = document.getElementById("version");
     if (versionEl && meta.version) versionEl.textContent = `v${meta.version}`;

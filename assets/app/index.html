@@ -35,9 +35,10 @@
       </div>
       <div id="loader" class="loader hidden">
         <h2>Load RDF files</h2>
-        <label>File A path <input id="path-a" type="text" placeholder="/path/to/a.ttl" /></label>
-        <label>File B path <input id="path-b" type="text" placeholder="/path/to/b.ttl" /></label>
-        <label>Or diff file <input id="path-diff" type="text" placeholder="/path/to/diff.trig" /></label>
+        <label>File A path <input id="path-a" type="text" list="rdf-files" placeholder="/path/to/a.ttl" /></label>
+        <label>File B path <input id="path-b" type="text" list="rdf-files" placeholder="/path/to/b.ttl" /></label>
+        <label>Or diff file <input id="path-diff" type="text" list="rdf-files" placeholder="/path/to/diff.trig" /></label>
+        <datalist id="rdf-files"></datalist>
         <button id="do-load">Load</button>
         <div id="loader-msg"></div>
       </div>

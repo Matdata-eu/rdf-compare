@@ -47,6 +47,15 @@ Or, once published:
 cargo install rdf-compare
 ```
 
+Or as a container, serving the web viewer over a mounted folder of RDF files:
+
+```sh
+docker run --rm -p 8080:8080 -v "$PWD/rdf:/data:ro" ghcr.io/matdata-eu/rdf-compare
+```
+
+See [docs/docker.md](docs/docker.md) for the image layout, configuration and
+notes on running it on Kubernetes with a shared volume.
+
 ## Usage
 
 ### Diff (default)
@@ -125,8 +134,9 @@ are bundled inside the binary.
 | `--diff <FILE>` | Pre-load a saved diff file instead of recomputing (conflicts with `--file-a`/`--file-b`). |
 | `--graph-a <IRI>` | Override the named-graph IRI for the A side. |
 | `--graph-b <IRI>` | Override the named-graph IRI for the B side. |
-| `--bind <ADDR>` | Bind address (default: `127.0.0.1:0`). |
+| `--bind <ADDR>` | Bind address (default: `127.0.0.1:0`; env `RDF_COMPARE_BIND`). |
 | `--no-open` | Do not auto-open the system browser. |
+| `--data-dir <DIR>` | Restrict the browser loader to files under `DIR` and list them as suggestions (env `RDF_COMPARE_DATA_DIR`). |
 
 ### Exit codes
 

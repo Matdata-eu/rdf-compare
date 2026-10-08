@@ -13,7 +13,7 @@ use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use oxrdf::{Quad, Term};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio_stream::StreamExt as _;
 use tokio_stream::wrappers::ReceiverStream;
@@ -25,6 +25,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/meta", get(meta))
         .route("/api/rows", get(rows))
         .route("/api/load", post(load))
+        .route("/api/files", get(files))
         .with_state(state)
 }
 
@@ -280,8 +281,98 @@ struct LoadBody {
     ignore_blank_nodes: bool,
 }
 
+/// Resolve a user-supplied path against the data directory. Relative paths
+/// are joined onto it; the canonical result must stay inside it so `..` and
+/// symlinks cannot escape. Without a data directory the path is used as-is.
+pub fn resolve_in_data_dir(root: Option<&Path>, path: &Path) -> anyhow::Result<PathBuf> {
+    let Some(root) = root else {
+        return Ok(path.to_path_buf());
+    };
+    let joined = root.join(path);
+    let canonical = joined
+        .canonicalize()
+        .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
+    if !canonical.starts_with(root) {
+        anyhow::bail!("{} is outside the data directory", path.display());
+    }
+    Ok(canonical)
+}
+
+const MAX_LISTED_FILES: usize = 10_000;
+const MAX_LIST_DEPTH: usize = 16;
+
+/// Recursively collect RDF files (by extension) under `root`, as paths
+/// relative to it, sorted.
+pub fn list_rdf_files(root: &Path) -> Vec<String> {
+    fn walk(root: &Path, dir: &Path, depth: usize, out: &mut Vec<String>) {
+        if depth > MAX_LIST_DEPTH || out.len() >= MAX_LISTED_FILES {
+            return;
+        }
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            if out.len() >= MAX_LISTED_FILES {
+                return;
+            }
+            let path = entry.path();
+            let name = entry.file_name();
+            // Skip hidden entries such as Kubernetes' `..data` volume symlinks.
+            if name.to_string_lossy().starts_with('.') {
+                continue;
+            }
+            let Ok(ft) = entry.file_type() else { continue };
+            if ft.is_dir() {
+                walk(root, &path, depth + 1, out);
+            } else if crate::cli::detect_format(&path).is_ok()
+                && let Ok(rel) = path.strip_prefix(root)
+            {
+                out.push(rel.to_string_lossy().replace('\\', "/"));
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(root, root, 0, &mut out);
+    out.sort();
+    out
+}
+
+#[derive(Serialize)]
+struct FilesDto {
+    enabled: bool,
+    files: Vec<String>,
+}
+
+async fn files(State(s): State<AppState>) -> Json<FilesDto> {
+    let Some(root) = s.data_dir.clone() else {
+        return Json(FilesDto {
+            enabled: false,
+            files: vec![],
+        });
+    };
+    let files = tokio::task::spawn_blocking(move || list_rdf_files(&root))
+        .await
+        .unwrap_or_default();
+    Json(FilesDto {
+        enabled: true,
+        files,
+    })
+}
+
 async fn load(State(s): State<AppState>, Json(body): Json<LoadBody>) -> Response {
-    let result: anyhow::Result<DiffResult> = if let Some(diff) = body.diff {
+    let root = s.data_dir.as_deref().map(PathBuf::as_path);
+    let resolve = |p: Option<PathBuf>| p.map(|p| resolve_in_data_dir(root, &p)).transpose();
+    let (diff, file_a, file_b) = match (
+        resolve(body.diff),
+        resolve(body.file_a),
+        resolve(body.file_b),
+    ) {
+        (Ok(d), Ok(a), Ok(b)) => (d, a, b),
+        (Err(e), _, _) | (_, Err(e), _) | (_, _, Err(e)) => {
+            return (StatusCode::BAD_REQUEST, format!("{e:#}")).into_response();
+        }
+    };
+    let result: anyhow::Result<DiffResult> = if let Some(diff) = diff {
         let inputs = LoadDiffInputs {
             diff,
             format: None,
@@ -292,7 +383,7 @@ async fn load(State(s): State<AppState>, Json(body): Json<LoadBody>) -> Response
             Ok(r) => r,
             Err(e) => Err(anyhow::anyhow!("task panic: {e}")),
         }
-    } else if let (Some(a), Some(b)) = (body.file_a, body.file_b) {
+    } else if let (Some(a), Some(b)) = (file_a, file_b) {
         let inputs = DiffInputs {
             file_a: a,
             file_b: b,
@@ -332,6 +423,27 @@ mod tests {
         p.push("fixtures");
         p.push(name);
         p
+    }
+
+    #[test]
+    fn data_dir_resolves_relative_and_rejects_escapes() {
+        let root = fixtures("").canonicalize().unwrap();
+        let ok = resolve_in_data_dir(Some(&root), Path::new("a.ttl")).unwrap();
+        assert_eq!(ok, root.join("a.ttl"));
+        let abs = resolve_in_data_dir(Some(&root), &root.join("b.ttl")).unwrap();
+        assert_eq!(abs, root.join("b.ttl"));
+        assert!(resolve_in_data_dir(Some(&root), Path::new("../cli.rs")).is_err());
+        assert!(resolve_in_data_dir(Some(&root), Path::new("/etc/passwd")).is_err());
+        assert!(resolve_in_data_dir(Some(&root), Path::new("missing.ttl")).is_err());
+    }
+
+    #[test]
+    fn lists_rdf_files_under_data_dir() {
+        let root = fixtures("").canonicalize().unwrap();
+        let files = list_rdf_files(&root);
+        assert!(files.contains(&"a.ttl".to_string()));
+        assert!(files.contains(&"quads-a.nq".to_string()));
+        assert!(files.windows(2).all(|w| w[0] <= w[1]));
     }
 
     #[test]

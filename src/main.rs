@@ -89,7 +89,7 @@ fn run_view(args: Args) -> ExitCode {
     if !args.quiet {
         print_summary(&args, &stats, start.elapsed());
     }
-    if let Err(err) = web::run_blocking(&args.bind, !args.no_open, Preload::Loaded(result)) {
+    if let Err(err) = web::run_blocking(&args.bind, !args.no_open, None, Preload::Loaded(result)) {
         eprintln!("rdf-compare: error: {err:#}");
         return ExitCode::from(2);
     }
@@ -121,7 +121,7 @@ fn run_serve(s: ServeArgs) -> ExitCode {
     } else {
         Preload::None
     };
-    if let Err(err) = web::run_blocking(&s.bind, !s.no_open, preload) {
+    if let Err(err) = web::run_blocking(&s.bind, !s.no_open, s.data_dir, preload) {
         eprintln!("rdf-compare: error: {err:#}");
         return ExitCode::from(2);
     }

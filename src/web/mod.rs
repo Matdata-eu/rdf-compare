@@ -15,6 +15,9 @@ use tokio::sync::Mutex;
 #[derive(Clone, Default)]
 pub struct AppState {
     pub data: Arc<Mutex<Option<Arc<DiffResult>>>>,
+    /// When set, `/api/load` only accepts paths inside this (canonical)
+    /// directory and `/api/files` lists the RDF files found under it.
+    pub data_dir: Option<Arc<PathBuf>>,
 }
 
 /// Server lifecycle wrapper.
@@ -122,27 +125,59 @@ pub async fn start(bind: &str, state: AppState) -> Result<Server> {
 
 /// Synchronous helper used by `main.rs`. Builds a current-thread Tokio runtime,
 /// starts the server, optionally opens the browser, and blocks until ctrl-c.
-pub fn run_blocking(bind: &str, open: bool, preload: Preload) -> Result<()> {
+pub fn run_blocking(
+    bind: &str,
+    open: bool,
+    data_dir: Option<PathBuf>,
+    preload: Preload,
+) -> Result<()> {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .context("failed to build tokio runtime")?;
     rt.block_on(async move {
-        let state = build_state(preload).await?;
+        let mut state = build_state(preload).await?;
+        if let Some(dir) = data_dir {
+            let dir = dir
+                .canonicalize()
+                .with_context(|| format!("data directory {} not found", dir.display()))?;
+            eprintln!("serving RDF files from {}", dir.display());
+            state.data_dir = Some(Arc::new(dir));
+        }
         let server = start(bind, state).await?;
         let url = format!("http://{}/", server.addr);
         eprintln!("rdf-compare viewer listening on {url}");
         if open && let Err(e) = webbrowser::open(&url) {
             eprintln!("could not open browser: {e}");
         }
-        // wait for ctrl-c or server task end
+        // wait for ctrl-c / SIGTERM or server task end
         tokio::select! {
-            r = tokio::signal::ctrl_c() => {
-                r.context("ctrl-c handler failed")?;
+            r = shutdown_signal() => {
+                r?;
                 eprintln!("shutting down");
                 Ok::<(), anyhow::Error>(())
             }
             _ = server.handle => Ok(()),
         }
     })
+}
+
+/// Resolves on ctrl-c, or on SIGTERM on unix (sent by `docker stop` and
+/// Kubernetes when a pod is terminated).
+async fn shutdown_signal() -> Result<()> {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        let mut term = signal(SignalKind::terminate()).context("SIGTERM handler failed")?;
+        tokio::select! {
+            r = tokio::signal::ctrl_c() => r.context("ctrl-c handler failed"),
+            _ = term.recv() => Ok(()),
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        tokio::signal::ctrl_c()
+            .await
+            .context("ctrl-c handler failed")
+    }
 }
