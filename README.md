@@ -29,9 +29,12 @@ Triples that appear in both files are omitted (they are the "common core").
 - **Quad-aware.** N-Quads and TriG inputs preserve their named graphs; the diff
   is then written as two parallel files (one per side) since RDF cannot nest
   named graphs.
+- **Diff statistics** (`--stats <FILE>`) — a JSON summary on top of the
+  triple-level diff: totals, per-predicate and per-class (`rdf:type`)
+  breakdowns, and the subjects that were added, removed or modified.
 - **Web viewer** (`--view` / `serve` subcommand) — explore the diff in an
-  interactive browser UI with filtering, sorting, prefix-shortened IRIs, and a
-  Leaflet map for `geo:wktLiteral` cells.
+  interactive browser UI with a statistics summary panel, filtering, sorting,
+  prefix-shortened IRIs, and a Leaflet map for `geo:wktLiteral` cells.
 
 ## Install
 
@@ -71,6 +74,9 @@ rdf-compare a.ttl b.ttl
 # Cross-format diff, write N-Quads to a file
 rdf-compare snapshot-old.nt.gz snapshot-new.ttl \
     --output-format nq -o diff.nq
+
+# Also write diff statistics as JSON
+rdf-compare a.ttl b.ttl -o diff.trig --stats stats.json
 
 # Use in CI: exit 1 when files differ
 rdf-compare expected.ttl actual.ttl --ci --quiet -o /dev/null
@@ -129,6 +135,7 @@ are bundled inside the binary.
 | `--output-format <FMT>` | `trig` (default) or `nq`. |
 | `--graph-a <IRI>` | Override the named-graph IRI for "only-in-A" triples. |
 | `--graph-b <IRI>` | Override the named-graph IRI for "only-in-B" triples. |
+| `--stats <FILE>` | Write diff statistics as JSON to `FILE` (`-` for stdout, requires `-o`). See [Statistics](#statistics). |
 | `--quiet` | Suppress the summary line on stderr. |
 | `--ci` | Exit with code 1 if any differences are found. |
 | `--view` | Open the diff in the local web viewer after computing it. |
@@ -198,6 +205,52 @@ A: a.ttl  triples=2  only-in-A=1  skipped-bnodes=0
 B: b.ttl  triples=3  only-in-B=2  skipped-bnodes=0
 common=1
 ```
+
+## Statistics
+
+`--stats stats.json` writes a JSON summary next to the RDF diff. The web viewer
+shows the same data in a collapsible **Summary** panel above the triple table
+(click a predicate, class or subject there to filter the table on it; click it again to clear).
+
+```json
+{
+  "totals":   { "a_total": 9, "b_total": 10, "common": 7, "added": 3, "removed": 2,
+                "a_skipped_bnodes": 0, "b_skipped_bnodes": 0 },
+  "subjects": { "a_total": 5, "b_total": 5, "affected": 3,
+                "added": 1, "removed": 1, "modified": 1 },
+  "predicates": [
+    { "predicate": "http://example.org/age", "added": 1, "removed": 1,
+      "a_total": 1, "b_total": 1, "common": 0 }
+  ],
+  "classes": [
+    { "class": "http://example.org/Person", "instances_added": 1, "instances_removed": 0,
+      "subjects_affected": 2, "triples_added": 3, "triples_removed": 1 },
+    { "class": null, "instances_added": 0, "instances_removed": 0,
+      "subjects_affected": 1, "triples_added": 0, "triples_removed": 1 }
+  ],
+  "top_subjects": [
+    { "subject": "http://example.org/alice", "added": 1, "removed": 1, "status": "modified" }
+  ]
+}
+```
+
+- **totals** — triple counts per side, common, added (only in B) and removed
+  (only in A).
+- **subjects** — distinct subjects per side and those *affected* by the diff,
+  split into *added* (subject only occurs in B), *removed* (only in A) and
+  *modified* (occurs on both sides).
+- **predicates** — one entry per predicate with at least one change, sorted by
+  number of changes.
+- **classes** — per `rdf:type` class of the affected subjects (types from A and
+  B combined): new / removed instances (`rdf:type` triples added / removed),
+  affected subjects, and added / removed triples on those subjects. A subject
+  with several types counts towards each; untyped subjects are grouped under
+  `"class": null`.
+- **top_subjects** — the 50 subjects with the most changed triples.
+
+When the viewer loads a saved diff file (`serve --diff`), only the changed
+triples are known, so the A/B totals, `common` and subject `status` are
+`null`, and classes come from the `rdf:type` triples inside the diff.
 
 ## How it works
 

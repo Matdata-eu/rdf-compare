@@ -1,6 +1,7 @@
 use clap::Parser;
 use rdf_compare::cli::{Args, Cli, Command, ServeArgs};
 use rdf_compare::diff::{DiffStats, compute_diff, write_diff};
+use rdf_compare::stats::write_summary_json;
 use rdf_compare::web::{self, Preload};
 use std::process::ExitCode;
 use std::time::Instant;
@@ -18,6 +19,15 @@ fn main() -> ExitCode {
             "error: the following required arguments were not provided:\n  \
              <FILE_A>\n  <FILE_B>\n\nUsage: rdf-compare <FILE_A> <FILE_B>\n\n\
              For more information, try '--help'."
+        );
+        return ExitCode::from(2);
+    }
+    if args.output.is_none()
+        && !args.view
+        && args.stats.as_deref().is_some_and(|p| p.as_os_str() == "-")
+    {
+        eprintln!(
+            "rdf-compare: error: `--stats -` needs `--output` (the diff already goes to stdout)"
         );
         return ExitCode::from(2);
     }
@@ -41,6 +51,9 @@ fn run_default(args: Args) -> ExitCode {
     };
     match compute_diff(&inputs).and_then(|r| {
         write_diff(&r, args.output.as_deref(), args.output_format)?;
+        if let Some(path) = &args.stats {
+            write_summary_json(&r.summary, path)?;
+        }
         Ok(r.stats)
     }) {
         Ok(stats) => {
@@ -85,6 +98,12 @@ fn run_view(args: Args) -> ExitCode {
         eprintln!("rdf-compare: error: {err:#}");
         return ExitCode::from(2);
     }
+    if let Some(path) = &args.stats
+        && let Err(err) = write_summary_json(&result.summary, path)
+    {
+        eprintln!("rdf-compare: error: {err:#}");
+        return ExitCode::from(2);
+    }
     let stats = result.stats;
     if !args.quiet {
         print_summary(&args, &stats, start.elapsed());
@@ -93,7 +112,7 @@ fn run_view(args: Args) -> ExitCode {
         &args.bind,
         !args.no_open,
         web::ServeConfig::default(),
-        Preload::Loaded(result),
+        Preload::Loaded(Box::new(result)),
     ) {
         eprintln!("rdf-compare: error: {err:#}");
         return ExitCode::from(2);

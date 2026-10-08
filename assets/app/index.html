@@ -26,6 +26,7 @@
           </select>
           <span id="common-error" class="error-msg hidden"></span>
         </label>
+        <button id="toggle-summary" class="ghost hidden" aria-expanded="true">Summary</button>
         <button id="open-load" class="ghost">Load files…</button>
       </div>
     </header>
@@ -42,6 +43,23 @@
         <button id="do-load">Load</button>
         <div id="loader-msg"></div>
       </div>
+      <section id="summary" class="summary hidden" aria-label="Diff summary">
+        <div id="summary-cards" class="summary-cards"></div>
+        <div class="summary-grid">
+          <div class="summary-block">
+            <h3>Predicates <span class="hint">click to filter</span></h3>
+            <div class="summary-scroll"><table id="summary-predicates"></table></div>
+          </div>
+          <div class="summary-block">
+            <h3>Classes <span class="hint">rdf:type of affected subjects · click to filter</span></h3>
+            <div class="summary-scroll"><table id="summary-classes"></table></div>
+          </div>
+          <div class="summary-block">
+            <h3>Most changed subjects <span class="hint">click to filter</span></h3>
+            <div class="summary-scroll"><table id="summary-subjects"></table></div>
+          </div>
+        </div>
+      </section>
       <div id="table" class="table"></div>
       <div id="loading-overlay" class="loading-overlay hidden">
         <div class="spinner"></div>

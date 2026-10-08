@@ -53,6 +53,11 @@ pub struct Args {
     #[arg(long = "graph-b")]
     pub graph_b: Option<String>,
 
+    /// Write higher-level statistics (totals, per predicate, per class,
+    /// affected subjects) as JSON to this file (`-` for stdout).
+    #[arg(long = "stats", value_name = "FILE")]
+    pub stats: Option<PathBuf>,
+
     /// Suppress the summary line on stderr.
     #[arg(long)]
     pub quiet: bool,
