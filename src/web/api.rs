@@ -24,6 +24,8 @@ pub fn router(state: AppState) -> Router {
         .route("/assets/*path", get(asset))
         .route("/api/meta", get(meta))
         .route("/api/rows", get(rows))
+        .route("/api/summary", get(summary))
+        .route("/api/class-subjects", get(class_subjects))
         .route("/api/load", post(load))
         .with_state(state)
 }
@@ -99,6 +101,34 @@ async fn meta(State(s): State<AppState>) -> Json<MetaDto> {
             }),
             prefixes: d.prefixes.clone(),
         }),
+    }
+}
+
+async fn summary(State(s): State<AppState>) -> Response {
+    let guard = s.data.lock().await;
+    match guard.as_ref() {
+        Some(d) => Json(&d.summary).into_response(),
+        None => (StatusCode::CONFLICT, "no diff loaded").into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct ClassQuery {
+    /// Class IRI; omitted for untyped subjects.
+    #[serde(default)]
+    class: Option<String>,
+}
+
+/// Affected subjects of one class, for filtering the triple table.
+async fn class_subjects(State(s): State<AppState>, Query(q): Query<ClassQuery>) -> Response {
+    let guard = s.data.lock().await;
+    match guard.as_ref() {
+        Some(d) => {
+            let empty = Vec::new();
+            let subjects = d.summary.class_subjects.get(&q.class).unwrap_or(&empty);
+            Json(subjects).into_response()
+        }
+        None => (StatusCode::CONFLICT, "no diff loaded").into_response(),
     }
 }
 
@@ -357,5 +387,32 @@ mod tests {
             assert!(v["p"].is_string());
             assert!(v["o"].is_object());
         }
+    }
+
+    #[test]
+    fn class_subjects_lists_affected_subjects_per_class() {
+        let inputs = DiffInputs {
+            file_a: fixtures("summary-a.ttl"),
+            file_b: fixtures("summary-b.ttl"),
+            format_a: None,
+            format_b: None,
+            graph_a: None,
+            graph_b: None,
+            ignore_blank_nodes: false,
+        };
+        let d = compute_diff(&inputs).unwrap();
+        let cs = &d.summary.class_subjects;
+        let mut person = cs
+            .get(&Some("http://example.org/Person".to_string()))
+            .unwrap()
+            .clone();
+        person.sort();
+        assert_eq!(
+            person,
+            ["http://example.org/alice", "http://example.org/carol"]
+        );
+        assert_eq!(cs.get(&None).unwrap(), &["http://example.org/gone"]);
+        // Classes without changes have no entry.
+        assert!(!cs.contains_key(&Some("http://example.org/Company".to_string())));
     }
 }

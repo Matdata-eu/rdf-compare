@@ -20,6 +20,7 @@ fn args(a: &str, b: &str, out: PathBuf, fmt: OutputFormat) -> Args {
         output_format: fmt,
         graph_a: None,
         graph_b: None,
+        stats: None,
         quiet: true,
         ci: false,
         view: false,
@@ -163,6 +164,7 @@ fn first_file_prefix_wins_over_second() {
         output_format: OutputFormat::Trig,
         graph_a: None,
         graph_b: None,
+        stats: None,
         quiet: true,
         ci: false,
         view: false,
@@ -290,4 +292,76 @@ fn nq_inputs_emit_dual_output_files() {
     assert!(body_a.contains("\"vA\""));
     assert!(body_b.contains("\"vB\""));
     assert!(body_b.contains("\"v4\""));
+}
+
+#[test]
+fn stats_json_reports_predicates_classes_and_subjects() {
+    let dir = std::env::temp_dir().join("rdf-compare-stats");
+    let _ = std::fs::create_dir_all(&dir);
+    let out = dir.join("out.trig");
+    let stats_path = dir.join("stats.json");
+    let _ = std::fs::remove_file(&stats_path);
+
+    let mut a = args("summary-a.ttl", "summary-b.ttl", out, OutputFormat::Trig);
+    a.stats = Some(stats_path.clone());
+    run_diff(&a).unwrap();
+
+    let v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&stats_path).unwrap()).unwrap();
+
+    // ex:alice age 30→31, ex:carol is new (type + name), ex:gone is dropped.
+    assert_eq!(v["totals"]["added"], 3);
+    assert_eq!(v["totals"]["removed"], 2);
+    assert_eq!(v["totals"]["common"], 7);
+
+    assert_eq!(v["subjects"]["affected"], 3);
+    assert_eq!(v["subjects"]["added"], 1);
+    assert_eq!(v["subjects"]["removed"], 1);
+    assert_eq!(v["subjects"]["modified"], 1);
+    assert_eq!(v["subjects"]["a_total"], 5);
+    assert_eq!(v["subjects"]["b_total"], 5);
+
+    let preds = v["predicates"].as_array().unwrap();
+    let pred = |iri: &str| {
+        preds
+            .iter()
+            .find(|p| p["predicate"] == iri)
+            .unwrap_or_else(|| panic!("missing predicate {iri} in {preds:?}"))
+    };
+    let age = pred("http://example.org/age");
+    assert_eq!(age["added"], 1);
+    assert_eq!(age["removed"], 1);
+    assert_eq!(age["common"], 0);
+    let name = pred("http://example.org/name");
+    assert_eq!(name["added"], 1);
+    assert_eq!(name["removed"], 0);
+    assert_eq!(name["a_total"], 3);
+    assert_eq!(name["b_total"], 4);
+    assert_eq!(name["common"], 3);
+    // Unchanged predicates are not listed.
+    assert_eq!(preds.len(), 4);
+
+    let classes = v["classes"].as_array().unwrap();
+    let person = classes
+        .iter()
+        .find(|c| c["class"] == "http://example.org/Person")
+        .unwrap();
+    assert_eq!(person["instances_added"], 1);
+    assert_eq!(person["instances_removed"], 0);
+    assert_eq!(person["subjects_affected"], 2);
+    assert_eq!(person["triples_added"], 3);
+    assert_eq!(person["triples_removed"], 1);
+    let untyped = classes.iter().find(|c| c["class"].is_null()).unwrap();
+    assert_eq!(untyped["subjects_affected"], 1);
+    assert_eq!(untyped["triples_removed"], 1);
+    assert!(
+        !classes
+            .iter()
+            .any(|c| c["class"] == "http://example.org/Company"),
+        "unchanged classes must not be listed"
+    );
+
+    let top = v["top_subjects"].as_array().unwrap();
+    assert_eq!(top.len(), 3);
+    assert_eq!(top[0]["status"], "modified");
 }

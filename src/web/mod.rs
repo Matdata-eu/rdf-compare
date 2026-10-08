@@ -48,7 +48,7 @@ pub enum Preload {
         graph_a: Option<String>,
         graph_b: Option<String>,
     },
-    Loaded(DiffResult),
+    Loaded(Box<DiffResult>),
 }
 
 pub async fn build_state(preload: Preload) -> Result<AppState> {
@@ -57,7 +57,7 @@ pub async fn build_state(preload: Preload) -> Result<AppState> {
         Preload::None => {}
         Preload::Loaded(mut d) => {
             d.sort_rows();
-            *state.data.lock().await = Some(Arc::new(d));
+            *state.data.lock().await = Some(Arc::new(*d));
         }
         Preload::Files {
             file_a,

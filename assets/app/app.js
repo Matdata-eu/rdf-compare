@@ -7,6 +7,7 @@
     diffLoaded: false,
     commonLoaded: false,
     wktSelection: new Set(), // wkt literal strings currently shown on the map
+    classFilter: null, // { key, subjects: Set } when the table is filtered on a class
   };
 
   const els = {
@@ -24,6 +25,12 @@
     overlay: document.getElementById("loading-overlay"),
     overlayMsg: document.getElementById("loading-msg"),
     commonError: document.getElementById("common-error"),
+    summary: document.getElementById("summary"),
+    summaryToggle: document.getElementById("toggle-summary"),
+    summaryCards: document.getElementById("summary-cards"),
+    summaryPredicates: document.getElementById("summary-predicates"),
+    summaryClasses: document.getElementById("summary-classes"),
+    summarySubjects: document.getElementById("summary-subjects"),
   };
 
   function showLoading(msg) {
@@ -276,6 +283,147 @@
     if (legendDeleted) legendDeleted.title = `Triple present in ${rawA} but not in ${rawB}`;
   }
 
+  function fmt(n) {
+    return n === null || n === undefined ? "–" : Number(n).toLocaleString();
+  }
+
+  function card(label, value, cls, title) {
+    const t = title ? ` title="${escapeHtml(title)}"` : "";
+    return `<div class="card ${cls || ""}"${t}><div class="card-value">${value}</div><div class="card-label">${label}</div></div>`;
+  }
+
+  // Stacked bar: green for added, red for removed, scaled against `max`.
+  function changeBar(added, removed, max) {
+    const pa = max ? (100 * added) / max : 0;
+    const pr = max ? (100 * removed) / max : 0;
+    return `<div class="bar"><span class="bar-added" style="width:${pa}%"></span><span class="bar-removed" style="width:${pr}%"></span></div>`;
+  }
+
+  function renderIriText(iri) {
+    if (iri === null || iri === undefined) return '<em class="muted">(untyped)</em>';
+    const short = shortenIri(iri);
+    return `<span title="${escapeHtml(iri)}">${escapeHtml(short || `<${iri}>`)}</span>`;
+  }
+
+  // Untyped subjects are grouped under class `null`; "" stands for it in the DOM.
+  function classKey(c) {
+    return c === null || c === undefined ? "" : c;
+  }
+
+  function subjectInClass(data) {
+    return state.classFilter.subjects.has(data.s);
+  }
+
+  async function toggleClassFilter(key) {
+    if (state.classFilter && state.classFilter.key === key) {
+      state.classFilter = null;
+    } else {
+      const url = key ? `/api/class-subjects?class=${encodeURIComponent(key)}` : "/api/class-subjects";
+      const resp = await fetch(url);
+      if (!resp.ok) throw new Error(`${url} → ${resp.status}`);
+      state.classFilter = { key, subjects: new Set(await resp.json()) };
+    }
+    for (const tr of els.summaryClasses.querySelectorAll("tr[data-class]")) {
+      tr.classList.toggle("active", !!state.classFilter && tr.dataset.class === state.classFilter.key);
+    }
+    applyViewFilter(els.tripleView.value);
+  }
+
+  function setColumnFilter(field, value) {
+    if (!state.table) return;
+    const current = state.table.getHeaderFilterValue(field);
+    state.table.setHeaderFilterValue(field, current === value ? "" : value);
+  }
+
+  function renderSummary(sum) {
+    if (!sum) {
+      els.summary.classList.add("hidden");
+      els.summaryToggle.classList.add("hidden");
+      return;
+    }
+    const t = sum.totals;
+    const sub = sum.subjects;
+    const changed = t.added + t.removed;
+    const base = t.a_total || 0;
+    const pct = base ? ` (${((100 * changed) / base).toFixed(1)}% of A)` : "";
+    els.summaryCards.innerHTML = [
+      card("triples in A", fmt(t.a_total)),
+      card("triples in B", fmt(t.b_total)),
+      card("common", fmt(t.common), "common"),
+      card("added", `+${fmt(t.added)}`, "added", "Triples present in B but not in A"),
+      card("removed", `−${fmt(t.removed)}`, "removed", "Triples present in A but not in B"),
+      card("changed", fmt(changed), "", `Added + removed${pct}`),
+      card("subjects affected", fmt(sub.affected), "", `Out of ${fmt(sub.a_total)} subjects in A and ${fmt(sub.b_total)} in B`),
+      card("new subjects", fmt(sub.added), "added", "Subjects that only occur in B"),
+      card("removed subjects", fmt(sub.removed), "removed", "Subjects that only occur in A"),
+      card("modified subjects", fmt(sub.modified), "", "Subjects present on both sides with changed triples"),
+    ].join("");
+
+    const predMax = Math.max(1, ...sum.predicates.map((p) => p.added + p.removed));
+    els.summaryPredicates.innerHTML =
+      `<thead><tr><th>Predicate</th><th class="num">+</th><th class="num">−</th><th class="num">=</th><th></th></tr></thead><tbody>` +
+      sum.predicates
+        .map(
+          (p) =>
+            `<tr class="clickable" data-filter-field="p" data-filter-value="${escapeHtml(p.predicate)}">` +
+            `<td>${renderIriText(p.predicate)}</td>` +
+            `<td class="num added">${fmt(p.added)}</td><td class="num removed">${fmt(p.removed)}</td>` +
+            `<td class="num muted">${fmt(p.common)}</td>` +
+            `<td class="bar-cell">${changeBar(p.added, p.removed, predMax)}</td></tr>`,
+        )
+        .join("") +
+      "</tbody>";
+
+    const classMax = Math.max(1, ...sum.classes.map((c) => c.triples_added + c.triples_removed));
+    els.summaryClasses.innerHTML =
+      `<thead><tr><th>Class</th><th class="num" title="New instances (rdf:type added)">new</th><th class="num" title="Removed instances (rdf:type removed)">gone</th><th class="num" title="Affected subjects of this class">subj.</th><th class="num" title="Added triples on subjects of this class">+</th><th class="num" title="Removed triples on subjects of this class">−</th><th></th></tr></thead><tbody>` +
+      sum.classes
+        .map(
+          (c) =>
+            `<tr class="clickable${state.classFilter && state.classFilter.key === classKey(c.class) ? " active" : ""}" data-class="${escapeHtml(classKey(c.class))}">` +
+            `<td>${renderIriText(c.class)}</td>` +
+            `<td class="num added">${fmt(c.instances_added)}</td><td class="num removed">${fmt(c.instances_removed)}</td>` +
+            `<td class="num">${fmt(c.subjects_affected)}</td>` +
+            `<td class="num added">${fmt(c.triples_added)}</td><td class="num removed">${fmt(c.triples_removed)}</td>` +
+            `<td class="bar-cell">${changeBar(c.triples_added, c.triples_removed, classMax)}</td></tr>`,
+        )
+        .join("") +
+      "</tbody>";
+
+    const statusLabel = { added: "new", removed: "gone", modified: "modified" };
+    els.summarySubjects.innerHTML =
+      `<thead><tr><th>Subject</th><th>Status</th><th class="num">+</th><th class="num">−</th></tr></thead><tbody>` +
+      sum.top_subjects
+        .map(
+          (s) =>
+            `<tr class="clickable" data-filter-field="s" data-filter-value="${escapeHtml(s.subject)}">` +
+            `<td>${renderIriText(s.subject)}</td>` +
+            `<td>${s.status ? `<span class="status status-${s.status}">${statusLabel[s.status]}</span>` : "–"}</td>` +
+            `<td class="num added">${fmt(s.added)}</td><td class="num removed">${fmt(s.removed)}</td></tr>`,
+        )
+        .join("") +
+      "</tbody>";
+
+    els.summaryToggle.classList.remove("hidden");
+    setSummaryVisible(els.summaryToggle.getAttribute("aria-expanded") !== "false");
+  }
+
+  function setSummaryVisible(visible) {
+    els.summary.classList.toggle("hidden", !visible);
+    els.summaryToggle.setAttribute("aria-expanded", visible ? "true" : "false");
+    els.summaryToggle.classList.toggle("active", visible);
+    if (state.table) state.table.redraw();
+  }
+
+  async function loadSummary() {
+    const resp = await fetch("/api/summary");
+    if (!resp.ok) {
+      renderSummary(null);
+      return;
+    }
+    renderSummary(await resp.json());
+  }
+
   async function loadDiffRows() {
     if (state.diffLoaded) return;
     showLoading("Loading diff rows\u2026");
@@ -318,14 +466,15 @@
 
   function applyViewFilter(mode) {
     state.table.clearFilter(false);
+    if (state.classFilter) state.table.addFilter(subjectInClass);
     if (mode === "only-diff") {
-      state.table.setFilter("a", "!=", "=");
+      state.table.addFilter("a", "!=", "=");
     } else if (mode === "only-common") {
-      state.table.setFilter("a", "=", "=");
+      state.table.addFilter("a", "=", "=");
     } else if (mode === "only-added") {
-      state.table.setFilter("a", "=", "+");
+      state.table.addFilter("a", "=", "+");
     } else if (mode === "only-removed") {
-      state.table.setFilter("a", "=", "-");
+      state.table.addFilter("a", "=", "-");
     }
     // "diff-and-common" → no additional filter
   }
@@ -369,10 +518,13 @@
     renderMeta();
 
     if (!meta.loaded) {
+      renderSummary(null);
       els.empty.classList.remove("hidden");
       els.loader.classList.remove("hidden");
       return;
     }
+
+    await loadSummary();
 
     if (meta.from_diff_file) {
       setCommonOptionsDisabled(true);
@@ -383,6 +535,21 @@
   }
 
   els.openLoad.addEventListener("click", () => els.loader.classList.toggle("hidden"));
+
+  els.summaryToggle.addEventListener("click", () =>
+    setSummaryVisible(els.summaryToggle.getAttribute("aria-expanded") === "false"),
+  );
+
+  els.summary.addEventListener("click", (e) => {
+    const classRow = e.target.closest("tr[data-class]");
+    if (classRow) {
+      toggleClassFilter(classRow.dataset.class).catch((err) => console.error("class filter failed:", err));
+      return;
+    }
+    const tr = e.target.closest("tr[data-filter-field]");
+    if (!tr) return;
+    setColumnFilter(tr.dataset.filterField, tr.dataset.filterValue);
+  });
 
   els.doLoad.addEventListener("click", async () => {
     const body = {};
@@ -403,9 +570,11 @@
       els.loaderMsg.textContent = "Loaded.";
       state.diffLoaded = false;
       state.commonLoaded = false;
+      state.classFilter = null;
       state.table.clearData();
       const meta = await loadMeta();
       renderMeta();
+      await loadSummary();
       els.empty.classList.add("hidden");
       els.loader.classList.add("hidden");
       setCommonOptionsDisabled(!!meta.from_diff_file);

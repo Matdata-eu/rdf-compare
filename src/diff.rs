@@ -1,6 +1,7 @@
 use crate::cli::{InputFormat, OutputFormat};
 use crate::graph_iri::resolve_graph_iris;
 use crate::input::{is_quad_format, open_reader, parse_quads, parse_triples, quad_to_triple};
+use crate::stats::{DiffSummary, SummaryBuilder};
 use anyhow::{Context, Result, bail};
 use oxrdf::dataset::CanonicalizationAlgorithm;
 use oxrdf::{Dataset, GraphName, NamedNode, NamedOrBlankNode, Quad, Triple};
@@ -45,6 +46,8 @@ pub struct DiffResult {
     pub graph_a: NamedNode,
     pub graph_b: NamedNode,
     pub stats: DiffStats,
+    /// Higher-level statistics (per predicate, per class, subjects).
+    pub summary: DiffSummary,
     /// Source file paths, when known (used by the web viewer to lazily
     /// recompute the set of common triples).
     pub source_a: Option<PathBuf>,
@@ -259,6 +262,14 @@ pub fn compute_diff(inputs: &DiffInputs) -> Result<DiffResult> {
         quads_b = canonicalize_quads(quads_b);
     }
 
+    let mut summary = SummaryBuilder::new();
+    for q in &quads_a {
+        summary.observe_a(&q.subject, &q.predicate, &q.object);
+    }
+    for q in &quads_b {
+        summary.observe_b(&q.subject, &q.predicate, &q.object);
+    }
+
     let mut set: HashSet<Quad> = quads_a.into_iter().collect();
     let mut b_only: Vec<Quad> = Vec::new();
     for q in quads_b {
@@ -302,6 +313,7 @@ pub fn compute_diff(inputs: &DiffInputs) -> Result<DiffResult> {
         a_skipped_bnodes: 0,
         b_skipped_bnodes: 0,
     };
+    let summary = summary.finish(&stats, &a_only, &b_only);
 
     Ok(DiffResult {
         a_only,
@@ -310,6 +322,7 @@ pub fn compute_diff(inputs: &DiffInputs) -> Result<DiffResult> {
         graph_a,
         graph_b,
         stats,
+        summary,
         source_a: Some(inputs.file_a.clone()),
         source_b: Some(inputs.file_b.clone()),
         format_a: Some(fmt_a),
@@ -326,9 +339,11 @@ fn compute_diff_skip_bnodes(
     graph_b: &NamedNode,
     quad_mode: bool,
 ) -> Result<DiffResult> {
+    let mut summary = SummaryBuilder::new();
     let mut set: HashSet<Triple> = HashSet::new();
     let reader_a = open_reader(&inputs.file_a)?;
     let outcome_a = parse_triples(reader_a, fmt_a, |t| {
+        summary.observe_a(&t.subject, &t.predicate, &t.object);
         set.insert(t);
         Ok(())
     })
@@ -337,6 +352,7 @@ fn compute_diff_skip_bnodes(
     let mut b_only_triples: Vec<Triple> = Vec::new();
     let reader_b = open_reader(&inputs.file_b)?;
     let outcome_b = parse_triples(reader_b, fmt_b, |t| {
+        summary.observe_b(&t.subject, &t.predicate, &t.object);
         if !set.remove(&t) {
             b_only_triples.push(t);
         }
@@ -371,6 +387,7 @@ fn compute_diff_skip_bnodes(
         a_skipped_bnodes: outcome_a.skipped,
         b_skipped_bnodes: outcome_b.skipped,
     };
+    let summary = summary.finish(&stats, &a_only, &b_only);
 
     Ok(DiffResult {
         a_only,
@@ -379,6 +396,7 @@ fn compute_diff_skip_bnodes(
         graph_a: graph_a.clone(),
         graph_b: graph_b.clone(),
         stats,
+        summary,
         source_a: Some(inputs.file_a.clone()),
         source_b: Some(inputs.file_b.clone()),
         format_a: Some(fmt_a),
@@ -467,6 +485,9 @@ pub fn run_diff(args: &crate::cli::Args) -> Result<DiffStats> {
     };
     let result = compute_diff(&inputs)?;
     write_diff(&result, args.output.as_deref(), args.output_format)?;
+    if let Some(path) = &args.stats {
+        crate::stats::write_summary_json(&result.summary, path)?;
+    }
     Ok(result.stats)
 }
 
@@ -577,6 +598,7 @@ pub fn load_diff_file(inputs: &LoadDiffInputs) -> Result<DiffResult> {
         a_skipped_bnodes: 0,
         b_skipped_bnodes: 0,
     };
+    let summary = SummaryBuilder::from_diff_only().finish(&stats, &a_only, &b_only);
 
     Ok(DiffResult {
         a_only,
@@ -585,6 +607,7 @@ pub fn load_diff_file(inputs: &LoadDiffInputs) -> Result<DiffResult> {
         graph_a,
         graph_b,
         stats,
+        summary,
         source_a: None,
         source_b: None,
         format_a: None,
