@@ -110,11 +110,15 @@ pub struct ServeArgs {
     /// Do not auto-open the system browser.
     #[arg(long = "no-open")]
     pub no_open: bool,
-    /// Directory the browser loader may read from. Files under it are listed
-    /// in the loader, relative paths resolve against it, and paths outside it
-    /// are rejected. Intended for container / shared-volume deployments.
+    /// Directory the viewer may read from. Paths in the page URL resolve
+    /// against it, paths outside it are rejected, and its RDF files are listed
+    /// in the loader. Intended for container / shared-volume deployments.
     #[arg(long = "data-dir", env = "RDF_COMPARE_DATA_DIR")]
     pub data_dir: Option<PathBuf>,
+    /// Number of diffs requested through the page URL kept in memory.
+    /// The least recently viewed one is dropped when the cache is full.
+    #[arg(long = "cache-size", env = "RDF_COMPARE_CACHE_SIZE", default_value_t = crate::web::DEFAULT_CACHE_SIZE)]
+    pub cache_size: usize,
     /// Skip blank-node-bearing triples instead of canonicalising them.
     #[arg(long = "ignore-blank-nodes")]
     pub ignore_blank_nodes: bool,

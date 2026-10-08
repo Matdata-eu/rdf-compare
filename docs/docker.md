@@ -38,12 +38,13 @@ release build is slow).
 | --- | --- | --- | --- |
 | `RDF_COMPARE_DATA_DIR` | `serve --data-dir` | `/data` | Directory the browser loader may read from. |
 | `RDF_COMPARE_BIND` | `serve --bind` | `0.0.0.0:8080` | Listen address of the viewer. |
+| `RDF_COMPARE_CACHE_SIZE` | `serve --cache-size` | `4` | Number of computed diffs kept in memory. |
 
 With a data directory set, the viewer:
 
 - lists every RDF file under it (by extension, recursively, hidden entries
   skipped) as suggestions in the *Load files…* form;
-- resolves paths typed in the browser relative to it;
+- resolves paths in the page URL (and typed in the loader) relative to it;
 - rejects any path that resolves outside it, including through `..` or
   symlinks.
 
@@ -58,7 +59,10 @@ Web viewer over a local folder:
 
 ```sh
 docker run --rm -p 8080:8080 -v "$PWD/rdf:/data:ro" ghcr.io/matdata-eu/rdf-compare
-# open http://localhost:8080 and pick files in "Load files…"
+# open http://localhost:8080 and pick files in "Load files…", or link
+# straight to a diff:
+#   http://localhost:8080/?a=old.ttl&b=new.ttl
+#   http://localhost:8080/?diff=diffs/2026-10.trig
 ```
 
 Pre-load two files (relative paths resolve against `/data`, the working
@@ -100,18 +104,21 @@ These are pointers, not a supported manifest.
   `failureThreshold` in that case.
 - **Shutdown.** The server exits promptly on `SIGTERM`, so the default
   termination grace period is enough.
-- **Memory.** A diff keeps file A as a hash set plus both "only in" sets in
-  memory, and the loaded diff stays resident until another one is loaded.
-  Size `resources.limits.memory` from the largest pair of files you expect;
-  measure with `/usr/bin/time -v rdf-compare A B -o /dev/null` locally. A
-  container that runs out of memory is OOM-killed and restarted with no diff
-  loaded.
-- **One diff per instance.** The loaded diff is global to the process: when
-  one user loads files, every open browser tab sees the new diff on its next
-  refresh. Run one instance per user or team, or treat it as a shared
-  read-only view with a preloaded diff. Run a single replica (`replicas: 1`);
-  with several replicas behind a Service, requests from one browser can land
-  on instances holding different diffs.
+- **Diffs are addressed by URL.** Each diff is named by its page URL
+  (`?a=…&b=…` or `?diff=…`), so users can look at different diffs at the same
+  time and share links. The first request for a URL computes the diff; it is
+  then kept in an in-memory LRU cache (`RDF_COMPARE_CACHE_SIZE`, default 4)
+  keyed by path, size and modification time, so a file replaced on the volume
+  is diffed again. The server holds no other state, so several replicas
+  behind a Service work without sticky sessions; each replica computes a diff
+  the first time it is asked for it. Sticky sessions (for example
+  `sessionAffinity: ClientIP`) avoid that repeated work for large files.
+- **Memory.** A diff keeps file A as a hash set while it is computed, and the
+  cached result holds both "only in" sets. Size `resources.limits.memory` for
+  `RDF_COMPARE_CACHE_SIZE` times the largest diff you expect, plus one
+  computation in flight per concurrent new URL; measure with
+  `/usr/bin/time -v rdf-compare A B -o /dev/null` locally. A container that
+  runs out of memory is OOM-killed and restarted with an empty cache.
 - **No authentication.** The viewer has no login and shows the full content
   of any file under the data directory. Keep it on an internal network or put
   it behind an authenticating ingress / proxy (for example oauth2-proxy).

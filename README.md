@@ -103,6 +103,19 @@ rdf-compare serve --diff diff.trig
 rdf-compare serve --file-a a.ttl --file-b b.ttl --bind 127.0.0.1:8080 --no-open
 ```
 
+Every diff can also be opened by URL, which makes it bookmarkable and lets
+several browser tabs (or users) look at different diffs on one server:
+
+```text
+http://127.0.0.1:8080/?a=old.ttl&b=new.ttl
+http://127.0.0.1:8080/?diff=diff.trig
+http://127.0.0.1:8080/?a=old.ttl&b=new.ttl&ignore_blank_nodes=true
+```
+
+`graph_a` and `graph_b` are accepted too. Computed diffs are cached in memory
+(see `--cache-size`) and recomputed when a file changes on disk. The URL
+without parameters shows the diff preloaded on the command line, if any.
+
 The viewer runs entirely offline — all assets (Tabulator, Leaflet, wellknown)
 are bundled inside the binary.
 
@@ -136,7 +149,8 @@ are bundled inside the binary.
 | `--graph-b <IRI>` | Override the named-graph IRI for the B side. |
 | `--bind <ADDR>` | Bind address (default: `127.0.0.1:0`; env `RDF_COMPARE_BIND`). |
 | `--no-open` | Do not auto-open the system browser. |
-| `--data-dir <DIR>` | Restrict the browser loader to files under `DIR` and list them as suggestions (env `RDF_COMPARE_DATA_DIR`). |
+| `--data-dir <DIR>` | Resolve URL paths against `DIR`, reject paths outside it, and list its RDF files in the loader (env `RDF_COMPARE_DATA_DIR`). |
+| `--cache-size <N>` | Number of diffs opened by URL kept in memory (default `4`; env `RDF_COMPARE_CACHE_SIZE`). |
 
 ### Exit codes
 

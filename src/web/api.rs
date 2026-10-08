@@ -10,7 +10,7 @@ use axum::body::Body;
 use axum::extract::{Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::{Html, IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::get;
 use oxrdf::{Quad, Term};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -24,7 +24,6 @@ pub fn router(state: AppState) -> Router {
         .route("/assets/*path", get(asset))
         .route("/api/meta", get(meta))
         .route("/api/rows", get(rows))
-        .route("/api/load", post(load))
         .route("/api/files", get(files))
         .with_state(state)
 }
@@ -71,9 +70,12 @@ struct MetaDto {
     prefixes: Vec<(String, String)>,
 }
 
-async fn meta(State(s): State<AppState>) -> Json<MetaDto> {
-    let guard = s.data.lock().await;
-    match guard.as_ref() {
+async fn meta(State(s): State<AppState>, Query(src): Query<SourceQuery>) -> Response {
+    let data = match diff_for(&s, src).await {
+        Ok(d) => d,
+        Err(e) => return e.into_response(),
+    };
+    match data.as_deref() {
         None => Json(MetaDto {
             version: env!("CARGO_PKG_VERSION"),
             loaded: false,
@@ -101,6 +103,7 @@ async fn meta(State(s): State<AppState>) -> Json<MetaDto> {
             prefixes: d.prefixes.clone(),
         }),
     }
+    .into_response()
 }
 
 #[derive(Deserialize)]
@@ -190,9 +193,16 @@ pub fn render_diff_ndjson(data: &DiffResult) -> Vec<u8> {
     buf
 }
 
-async fn rows(State(s): State<AppState>, Query(q): Query<RowsQuery>) -> Response {
+async fn rows(
+    State(s): State<AppState>,
+    Query(q): Query<RowsQuery>,
+    Query(src): Query<SourceQuery>,
+) -> Response {
     let include = q.include.as_deref().unwrap_or("diff").to_string();
-    let data_arc = s.data.lock().await.clone();
+    let data_arc = match diff_for(&s, src).await {
+        Ok(d) => d,
+        Err(e) => return e.into_response(),
+    };
     let Some(data) = data_arc else {
         return (StatusCode::CONFLICT, "no diff loaded").into_response();
     };
@@ -270,15 +280,91 @@ async fn rows(State(s): State<AppState>, Query(q): Query<RowsQuery>) -> Response
     resp
 }
 
-#[derive(Deserialize)]
-struct LoadBody {
-    file_a: Option<PathBuf>,
-    file_b: Option<PathBuf>,
+/// Which diff a request is about, taken from the page URL's query string:
+/// `a` + `b` (two source files) or `diff` (a saved diff file). With none of
+/// them the diff preloaded from the command line is used.
+#[derive(Debug, Default, Deserialize)]
+pub struct SourceQuery {
+    a: Option<PathBuf>,
+    b: Option<PathBuf>,
     diff: Option<PathBuf>,
     graph_a: Option<String>,
     graph_b: Option<String>,
     #[serde(default)]
     ignore_blank_nodes: bool,
+}
+
+/// Identifies a file's content for cache purposes: path, size and mtime.
+fn file_key(path: &Path) -> anyhow::Result<String> {
+    let md = std::fs::metadata(path).map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
+    let mtime = md
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    Ok(format!("{}|{}|{}", path.display(), md.len(), mtime))
+}
+
+/// Resolve the diff named by `src`: `Ok(None)` when it names nothing and no
+/// diff was preloaded, an error status for bad parameters or failed diffs.
+async fn diff_for(
+    s: &AppState,
+    src: SourceQuery,
+) -> Result<Option<Arc<DiffResult>>, (StatusCode, String)> {
+    let bad = |e: anyhow::Error| (StatusCode::BAD_REQUEST, format!("{e:#}"));
+    let root = s.data_dir.as_deref().map(PathBuf::as_path);
+    let resolve = |p: &Path| resolve_in_data_dir(root, p).map_err(bad);
+    let opts = format!(
+        "{:?}|{:?}|{}",
+        src.graph_a, src.graph_b, src.ignore_blank_nodes
+    );
+    let (key, compute): (
+        String,
+        Box<dyn FnOnce() -> anyhow::Result<DiffResult> + Send>,
+    ) = match (src.a, src.b, src.diff) {
+        (None, None, None) => return Ok(s.default.clone()),
+        (None, None, Some(diff)) => {
+            let diff = resolve(&diff)?;
+            let key = format!("diff|{}|{opts}", file_key(&diff).map_err(bad)?);
+            let inputs = LoadDiffInputs {
+                diff,
+                format: None,
+                graph_a: src.graph_a,
+                graph_b: src.graph_b,
+            };
+            (key, Box::new(move || load_diff_file(&inputs)))
+        }
+        (Some(a), Some(b), None) => {
+            let (a, b) = (resolve(&a)?, resolve(&b)?);
+            let key = format!(
+                "files|{}|{}|{opts}",
+                file_key(&a).map_err(bad)?,
+                file_key(&b).map_err(bad)?
+            );
+            let inputs = DiffInputs {
+                file_a: a,
+                file_b: b,
+                format_a: None,
+                format_b: None,
+                graph_a: src.graph_a,
+                graph_b: src.graph_b,
+                ignore_blank_nodes: src.ignore_blank_nodes,
+            };
+            (key, Box::new(move || compute_diff(&inputs)))
+        }
+        _ => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "provide both `a` and `b`, or `diff` on its own".to_string(),
+            ));
+        }
+    };
+    s.cache
+        .get_or_compute(&key, compute)
+        .await
+        .map(Some)
+        .map_err(bad)
 }
 
 /// Resolve a user-supplied path against the data directory. Relative paths
@@ -357,58 +443,6 @@ async fn files(State(s): State<AppState>) -> Json<FilesDto> {
         enabled: true,
         files,
     })
-}
-
-async fn load(State(s): State<AppState>, Json(body): Json<LoadBody>) -> Response {
-    let root = s.data_dir.as_deref().map(PathBuf::as_path);
-    let resolve = |p: Option<PathBuf>| p.map(|p| resolve_in_data_dir(root, &p)).transpose();
-    let (diff, file_a, file_b) = match (
-        resolve(body.diff),
-        resolve(body.file_a),
-        resolve(body.file_b),
-    ) {
-        (Ok(d), Ok(a), Ok(b)) => (d, a, b),
-        (Err(e), _, _) | (_, Err(e), _) | (_, _, Err(e)) => {
-            return (StatusCode::BAD_REQUEST, format!("{e:#}")).into_response();
-        }
-    };
-    let result: anyhow::Result<DiffResult> = if let Some(diff) = diff {
-        let inputs = LoadDiffInputs {
-            diff,
-            format: None,
-            graph_a: body.graph_a,
-            graph_b: body.graph_b,
-        };
-        match tokio::task::spawn_blocking(move || load_diff_file(&inputs)).await {
-            Ok(r) => r,
-            Err(e) => Err(anyhow::anyhow!("task panic: {e}")),
-        }
-    } else if let (Some(a), Some(b)) = (file_a, file_b) {
-        let inputs = DiffInputs {
-            file_a: a,
-            file_b: b,
-            format_a: None,
-            format_b: None,
-            graph_a: body.graph_a,
-            graph_b: body.graph_b,
-            ignore_blank_nodes: body.ignore_blank_nodes,
-        };
-        match tokio::task::spawn_blocking(move || compute_diff(&inputs)).await {
-            Ok(r) => r,
-            Err(e) => Err(anyhow::anyhow!("task panic: {e}")),
-        }
-    } else {
-        return (StatusCode::BAD_REQUEST, "provide file_a+file_b or diff").into_response();
-    };
-
-    match result {
-        Ok(mut d) => {
-            d.sort_rows();
-            *s.data.lock().await = Some(Arc::new(d));
-            (StatusCode::OK, "ok").into_response()
-        }
-        Err(e) => (StatusCode::BAD_REQUEST, format!("{e:#}")).into_response(),
-    }
 }
 
 #[cfg(test)]
