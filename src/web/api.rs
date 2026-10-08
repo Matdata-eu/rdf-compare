@@ -24,6 +24,7 @@ pub fn router(state: AppState) -> Router {
         .route("/assets/*path", get(asset))
         .route("/api/meta", get(meta))
         .route("/api/rows", get(rows))
+        .route("/api/summary", get(summary))
         .route("/api/load", post(load))
         .with_state(state)
 }
@@ -99,6 +100,14 @@ async fn meta(State(s): State<AppState>) -> Json<MetaDto> {
             }),
             prefixes: d.prefixes.clone(),
         }),
+    }
+}
+
+async fn summary(State(s): State<AppState>) -> Response {
+    let guard = s.data.lock().await;
+    match guard.as_ref() {
+        Some(d) => Json(&d.summary).into_response(),
+        None => (StatusCode::CONFLICT, "no diff loaded").into_response(),
     }
 }
 

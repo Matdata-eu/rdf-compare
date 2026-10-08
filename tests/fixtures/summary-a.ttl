@@ -1,0 +1,12 @@
+@prefix ex: <http://example.org/> .
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+
+ex:alice rdf:type ex:Person ;
+    ex:name "Alice" ;
+    ex:age 30 .
+ex:bob rdf:type ex:Person ;
+    ex:name "Bob" .
+ex:acme rdf:type ex:Company ;
+    ex:name "ACME" .
+ex:loose ex:note "untyped and unchanged" .
+ex:gone ex:note "only in A" .
