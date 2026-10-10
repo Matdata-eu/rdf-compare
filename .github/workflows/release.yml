@@ -94,7 +94,7 @@ jobs:
           NAME="rdf-compare-${GITHUB_REF#refs/tags/}-${{ matrix.target }}"
           mkdir "$NAME"
           cp "target/${{ matrix.target }}/release/rdf-compare" "$NAME/"
-          cp README.md "$NAME/" 2>/dev/null || true
+          cp README.md LICENSE THIRD_PARTY_NOTICES.md "$NAME/"
           tar czf "$NAME.tar.gz" "$NAME"
           echo "ASSET=$NAME.tar.gz" >> "$GITHUB_ENV"
 
@@ -105,7 +105,7 @@ jobs:
           NAME="rdf-compare-${GITHUB_REF#refs/tags/}-${{ matrix.target }}"
           mkdir "$NAME"
           cp "target/${{ matrix.target }}/release/rdf-compare.exe" "$NAME/"
-          cp README.md "$NAME/" 2>/dev/null || true
+          cp README.md LICENSE THIRD_PARTY_NOTICES.md "$NAME/"
           7z a "$NAME.zip" "$NAME"
           echo "ASSET=$NAME.zip" >> "$GITHUB_ENV"
 

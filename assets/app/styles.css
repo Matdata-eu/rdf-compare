@@ -120,3 +120,12 @@ button.ghost.active { background: #eaeef2; }
 .status-added { background: var(--added-bg); color: var(--added-fg); }
 .status-removed { background: var(--deleted-bg); color: var(--deleted-fg); }
 .status-modified { background: #fff8c5; color: #7d4e00; }
+
+/* About dialog */
+.about { max-width: 460px; border: 1px solid var(--border); border-radius: 8px; padding: 1rem 1.25rem; color: var(--fg); font-size: 0.9rem; }
+.about::backdrop { background: rgba(0, 0, 0, 0.3); }
+.about h2 { margin: 0 0 0.5rem; font-size: 1.05rem; }
+.about ul { padding-left: 1.2rem; }
+.about a { color: var(--accent); }
+.about .credits { color: var(--muted); font-size: 0.8rem; }
+.about form { text-align: right; margin: 0; }

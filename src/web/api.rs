@@ -22,6 +22,7 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/", get(root))
         .route("/assets/*path", get(asset))
+        .route("/licenses", get(licenses))
         .route("/api/meta", get(meta))
         .route("/api/rows", get(rows))
         .route("/api/summary", get(summary))
@@ -35,6 +36,15 @@ async fn root() -> Response {
         Some(a) => Html(std::str::from_utf8(a.bytes).unwrap_or("")).into_response(),
         None => (StatusCode::NOT_FOUND, "missing").into_response(),
     }
+}
+
+/// Licenses of the third-party software bundled in the binary.
+async fn licenses() -> Response {
+    (
+        [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+        include_str!("../../THIRD_PARTY_NOTICES.md"),
+    )
+        .into_response()
 }
 
 async fn asset(axum::extract::Path(path): axum::extract::Path<String>) -> Response {

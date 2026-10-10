@@ -5,7 +5,12 @@ use std::path::{Path, PathBuf};
 /// Top-level CLI entry point. Supports the default diff invocation
 /// (`rdf-compare A B …`) and a `serve` subcommand for the web viewer.
 #[derive(Debug, Parser)]
-#[command(version, about, long_about = None)]
+#[command(
+    version,
+    about,
+    long_about = None,
+    after_help = "Questions, bug reports and feature requests: https://github.com/Matdata-eu/rdf-compare/issues"
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Command>,

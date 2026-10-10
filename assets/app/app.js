@@ -567,6 +567,8 @@
     }
     const versionEl = document.getElementById("version");
     if (versionEl && meta.version) versionEl.textContent = `v${meta.version}`;
+    const aboutVersionEl = document.getElementById("about-version");
+    if (aboutVersionEl && meta.version) aboutVersionEl.textContent = `v${meta.version}`;
     renderMeta();
 
     if (!meta.loaded) {
@@ -587,6 +589,8 @@
   }
 
   els.openLoad.addEventListener("click", () => els.loader.classList.toggle("hidden"));
+
+  document.getElementById("open-about").addEventListener("click", () => document.getElementById("about").showModal());
 
   els.summaryToggle.addEventListener("click", () =>
     setSummaryVisible(els.summaryToggle.getAttribute("aria-expanded") === "false"),

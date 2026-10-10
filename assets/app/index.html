@@ -28,6 +28,7 @@
         </label>
         <button id="toggle-summary" class="ghost hidden" aria-expanded="true">Summary</button>
         <button id="open-load" class="ghost">Load files…</button>
+        <button id="open-about" class="ghost" aria-haspopup="dialog">About</button>
       </div>
     </header>
     <main>
@@ -67,6 +68,23 @@
       </div>
       <div id="map" class="map hidden"></div>
     </main>
+    <dialog id="about" class="about" aria-labelledby="about-title">
+      <h2 id="about-title">rdf-compare <span id="about-version" class="version"></span></h2>
+      <p>Compare two RDF files and explore the differences.</p>
+      <p>Made by Mathias Vanden Auweele (<a href="https://matdata.eu/" target="_blank" rel="noopener">Matdata</a>).
+        Licensed under the <a href="https://github.com/Matdata-eu/rdf-compare/blob/main/LICENSE" target="_blank" rel="noopener">Apache License 2.0</a>.</p>
+      <ul>
+        <li><a href="https://github.com/Matdata-eu/rdf-compare" target="_blank" rel="noopener">Source code on GitHub</a></li>
+        <li><a href="https://github.com/Matdata-eu/rdf-compare/issues" target="_blank" rel="noopener">Questions, bug reports and feature requests</a></li>
+        <li><a href="/licenses" target="_blank" rel="noopener">Third-party licenses</a></li>
+      </ul>
+      <p class="credits">Built with <a href="https://tabulator.info" target="_blank" rel="noopener">Tabulator</a>,
+        <a href="https://leafletjs.com" target="_blank" rel="noopener">Leaflet</a>,
+        <a href="https://github.com/mapbox/wellknown" target="_blank" rel="noopener">wellknown</a> and
+        <a href="https://github.com/oxigraph/oxigraph" target="_blank" rel="noopener">Oxigraph</a>'s RDF crates.
+        Map data &copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors.</p>
+      <form method="dialog"><button>Close</button></form>
+    </dialog>
     <script src="/assets/vendor/tabulator/tabulator.min.js"></script>
     <script src="/assets/vendor/leaflet/leaflet.js"></script>
     <script src="/assets/vendor/wellknown/wellknown.js"></script>
