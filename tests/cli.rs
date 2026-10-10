@@ -27,6 +27,8 @@ fn args(a: &str, b: &str, out: PathBuf, fmt: OutputFormat) -> Args {
         no_open: false,
         bind: "127.0.0.1:0".to_string(),
         ignore_blank_nodes: false,
+        normalize_literals: false,
+        wkt_precision: None,
     }
 }
 
@@ -171,6 +173,8 @@ fn first_file_prefix_wins_over_second() {
         no_open: false,
         bind: "127.0.0.1:0".to_string(),
         ignore_blank_nodes: false,
+        normalize_literals: false,
+        wkt_precision: None,
     };
     a.graph_a = Some("urn:test:left".to_string());
     a.graph_b = Some("urn:test:right".to_string());
@@ -364,4 +368,45 @@ fn stats_json_reports_predicates_classes_and_subjects() {
     let top = v["top_subjects"].as_array().unwrap();
     assert_eq!(top.len(), 3);
     assert_eq!(top[0]["status"], "modified");
+
+    // ex:alice age 30→31 is one changed value; ex:carol's name is not.
+    assert_eq!(v["totals"]["changed"], 1);
+    assert_eq!(age["changed"], 1);
+    assert_eq!(name["changed"], 0);
+}
+
+fn diff_body(a: &Args) -> (rdf_compare::diff::DiffStats, String) {
+    let stats = run_diff(a).unwrap();
+    let body = std::fs::read_to_string(a.output.as_ref().unwrap()).unwrap();
+    (stats, body)
+}
+
+#[test]
+fn normalize_literals_cancels_equivalent_values() {
+    let out = std::env::temp_dir().join("rdf-compare-norm-off.nq");
+    let a = args("norm-a.ttl", "norm-b.ttl", out, OutputFormat::Nq);
+    let (stats, _) = diff_body(&a);
+    // Without normalisation every literal differs except the language tag
+    // (the Turtle parser already lower-cases it).
+    assert_eq!(stats.a_only, 7);
+    assert_eq!(stats.b_only, 7);
+
+    let out = std::env::temp_dir().join("rdf-compare-norm-on.nq");
+    let mut a = args("norm-a.ttl", "norm-b.ttl", out, OutputFormat::Nq);
+    a.normalize_literals = true;
+    let (stats, body) = diff_body(&a);
+    // Left: the coarse WKT point and the real name change.
+    assert_eq!(stats.a_only, 2, "{body}");
+    assert_eq!(stats.b_only, 2, "{body}");
+    assert_eq!(stats.changed, 2);
+    assert!(body.contains("\"Old name\""));
+    assert!(body.contains("POINT(4.3517103 50.8503396)"));
+
+    let out = std::env::temp_dir().join("rdf-compare-norm-wkt.nq");
+    let mut a = args("norm-a.ttl", "norm-b.ttl", out, OutputFormat::Nq);
+    a.normalize_literals = true;
+    a.wkt_precision = Some(4);
+    let (stats, body) = diff_body(&a);
+    assert_eq!(stats.a_only, 1, "{body}");
+    assert_eq!(stats.b_only, 1, "{body}");
 }

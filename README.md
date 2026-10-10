@@ -29,6 +29,14 @@ Triples that appear in both files are omitted (they are the "common core").
 - **Quad-aware.** N-Quads and TriG inputs preserve their named graphs; the diff
   is then written as two parallel files (one per side) since RDF cannot nest
   named graphs.
+- **Literal normalisation** (`--normalize-literals`, `--wkt-precision <N>`) —
+  compare values by meaning instead of spelling, so `"01"^^xsd:integer` and
+  `"1"^^xsd:integer`, or WKT that only differs in spacing or coordinate
+  precision, no longer show up as differences. See
+  [Literal normalisation](#literal-normalisation).
+- **Changed values.** A removed and an added triple with the same subject and
+  predicate are recognised as one *changed* value (`ex:age 30 → 31`), counted
+  in the summary and shown as a single row in the web viewer.
 - **Diff statistics** (`--stats <FILE>`) — a JSON summary on top of the
   triple-level diff: totals, per-predicate and per-class (`rdf:type`)
   breakdowns, and the subjects that were added, removed or modified.
@@ -142,6 +150,8 @@ are bundled inside the binary.
 | `--no-open` | Do not auto-open the system browser (implies `--view`). |
 | `--bind <ADDR>` | Bind address for the viewer (default: `127.0.0.1:0`). |
 | `--ignore-blank-nodes` | Skip every triple touching a blank node instead of canonicalising. |
+| `--normalize-literals` | Compare literals by their canonical form (see [Literal normalisation](#literal-normalisation)). |
+| `--wkt-precision <N>` | Round WKT coordinates to `N` decimals before comparing. |
 
 ### Options — `serve` subcommand
 
@@ -158,6 +168,13 @@ are bundled inside the binary.
 | `--no-open` | Do not auto-open the system browser. |
 | `--data-dir <DIR>` | Resolve URL paths against `DIR`, reject paths outside it, and list its RDF files in the loader (env `RDF_COMPARE_DATA_DIR`). |
 | `--cache-size <N>` | Number of diffs opened by URL kept in memory (default `4`; env `RDF_COMPARE_CACHE_SIZE`). |
+| `--ignore-blank-nodes` | Skip every triple touching a blank node instead of canonicalising. |
+| `--normalize-literals` | Compare literals by their canonical form for the pre-loaded files. |
+| `--wkt-precision <N>` | Round WKT coordinates to `N` decimals for the pre-loaded files. |
+
+Diffs opened by URL take the same options as query parameters, for example
+`/?a=old.ttl&b=new.ttl&normalize_literals=true&wkt_precision=6`. The loader
+form has a checkbox and a field for them.
 
 ### Exit codes
 
@@ -203,7 +220,55 @@ ex:s4 ex:p "v4" .
 ```
 A: a.ttl  triples=2  only-in-A=1  skipped-bnodes=0
 B: b.ttl  triples=3  only-in-B=2  skipped-bnodes=0
-common=1
+common=1  changed=1
+```
+
+`changed=1` is `ex:s3 ex:p`, whose value went from `"vA"` to `"vB"`. A changed
+value is still one removed and one added triple in the RDF output and in the
+`only-in-A` / `only-in-B` counts.
+
+## Changed values
+
+A removed triple and an added triple form a *changed value* when they share
+subject and predicate (and named graph, for quad inputs) and that is the only
+removed and the only added triple for that subject and predicate. For
+language-tagged literals the language is part of the match, so `rdfs:label`
+changing in English and in Dutch at the same time gives two changed values.
+When a multi-valued property has several removals or additions (two tags
+removed, one added) the triples stay separate, since there is no way to tell
+which one replaced which.
+
+The web viewer shows each changed value as one `~` row with the old value
+struck through next to the new one. Untick **Group changes** to see the
+separate removed and added rows instead; **Triples to show → Only changed**
+lists just the changed values.
+
+## Literal normalisation
+
+With `--normalize-literals` both inputs are rewritten before the comparison,
+and the diff shows the rewritten values:
+
+| Literal | Normalised form | Example |
+| --- | --- | --- |
+| `xsd:integer` and its subtypes (`int`, `long`, …) | no `+`, no leading zeros | `"+007"` → `"7"` |
+| `xsd:decimal` | no superfluous zeros, one digit each side of the point | `"012.50"` → `"12.5"`, `"3"` → `"3.0"` |
+| `xsd:double`, `xsd:float` | XSD canonical exponent form | `"100"` → `"1.0E2"` |
+| `xsd:boolean` | `true` / `false` | `"1"` → `"true"` |
+| `xsd:dateTime`, `xsd:time`, `xsd:date` | no trailing zeros in fractional seconds, UTC as `Z` | `"…05.500+00:00"` → `"…05.5Z"` |
+| language tags | lower case | `@EN-GB` → `@en-gb` |
+| `geo:wktLiteral` | upper-case keywords, single spaces, shortest numbers | `"point ( 4.50  50.0 )"` → `"POINT(4.5 50)"` |
+
+Datatypes are never changed, so `"1"^^xsd:int` and `"1"^^xsd:integer` still
+differ, and plain strings are left exactly as they are. A lexical form that is
+not valid for its datatype is kept unchanged. Other timezone offsets are not
+converted to UTC.
+
+`--wkt-precision <N>` rounds WKT coordinates to `N` decimals (it also applies
+the WKT formatting rules above, with or without `--normalize-literals`). Use it
+when two exports of the same geometry differ only in the last digits:
+
+```sh
+rdf-compare old.ttl new.ttl --normalize-literals --wkt-precision 6
 ```
 
 ## Statistics
@@ -215,11 +280,11 @@ shows the same data in a collapsible **Summary** panel above the triple table
 ```json
 {
   "totals":   { "a_total": 9, "b_total": 10, "common": 7, "added": 3, "removed": 2,
-                "a_skipped_bnodes": 0, "b_skipped_bnodes": 0 },
+                "changed": 1, "a_skipped_bnodes": 0, "b_skipped_bnodes": 0 },
   "subjects": { "a_total": 5, "b_total": 5, "affected": 3,
                 "added": 1, "removed": 1, "modified": 1 },
   "predicates": [
-    { "predicate": "http://example.org/age", "added": 1, "removed": 1,
+    { "predicate": "http://example.org/age", "added": 1, "removed": 1, "changed": 1,
       "a_total": 1, "b_total": 1, "common": 0 }
   ],
   "classes": [
@@ -234,13 +299,14 @@ shows the same data in a collapsible **Summary** panel above the triple table
 }
 ```
 
-- **totals** — triple counts per side, common, added (only in B) and removed
-  (only in A).
+- **totals** — triple counts per side, common, added (only in B), removed
+  (only in A) and changed values (see [Changed values](#changed-values); each
+  is also counted once in added and once in removed).
 - **subjects** — distinct subjects per side and those *affected* by the diff,
   split into *added* (subject only occurs in B), *removed* (only in A) and
   *modified* (occurs on both sides).
 - **predicates** — one entry per predicate with at least one change, sorted by
-  number of changes.
+  number of changes, including its number of changed values.
 - **classes** — per `rdf:type` class of the affected subjects (types from A and
   B combined): new / removed instances (`rdf:type` triples added / removed),
   affected subjects, and added / removed triples on those subjects. A subject
@@ -255,11 +321,14 @@ triples are known, so the A/B totals, `common` and subject `status` are
 ## How it works
 
 1. Each input is parsed into a quad stream (triple inputs are tagged with the
-   default graph).
+   default graph). With `--normalize-literals` / `--wkt-precision`, literal
+   objects are rewritten to their canonical form as they are read.
 2. If either side contains blank nodes, both sides are independently
    canonicalised using [W3C RDFC-1.0](https://www.w3.org/TR/rdf-canon/) so
    that isomorphic blank-node structures receive identical canonical labels.
-3. A symmetric set-diff yields the *only-in-A* and *only-in-B* quad sets.
+3. A symmetric set-diff yields the *only-in-A* and *only-in-B* quad sets, and
+   removed/added pairs with the same subject and predicate are marked as
+   changed values.
 4. For triple-only inputs, the two sides are written into a single TriG / N-Quads
    file under per-side wrapper graph IRIs. For quad inputs, the original named
    graphs are preserved and the result is split across two parallel files

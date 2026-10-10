@@ -79,6 +79,7 @@ pub enum Preload {
         graph_a: Option<String>,
         graph_b: Option<String>,
         ignore_blank_nodes: bool,
+        normalization: crate::normalize::Normalization,
     },
     Diff {
         diff: PathBuf,
@@ -105,6 +106,7 @@ pub async fn build_state(preload: Preload) -> Result<AppState> {
             graph_a,
             graph_b,
             ignore_blank_nodes,
+            normalization,
         } => {
             let inputs = crate::diff::DiffInputs {
                 file_a,
@@ -114,6 +116,7 @@ pub async fn build_state(preload: Preload) -> Result<AppState> {
                 graph_a,
                 graph_b,
                 ignore_blank_nodes,
+                normalization,
             };
             let mut result = tokio::task::spawn_blocking(move || compute_diff(&inputs))
                 .await
