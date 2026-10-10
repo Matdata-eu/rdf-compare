@@ -278,6 +278,42 @@ cargo clippy --all-targets -- -D warnings
 cargo fmt
 ```
 
+`THIRD_PARTY_NOTICES.md` lists the licenses of everything compiled into the
+binary. After changing dependencies or vendored assets, regenerate it with
+[cargo-about](https://github.com/EmbarkStudios/cargo-about) (`cargo install
+cargo-about --features cli`):
+
+```sh
+cargo about generate about.hbs -o THIRD_PARTY_NOTICES.md
+```
+
+## Questions, bugs and feature requests
+
+Please open an issue on GitHub:
+<https://github.com/Matdata-eu/rdf-compare/issues>.
+
+## Credits
+
+rdf-compare is written by Mathias Vanden Auweele ([Matdata](https://matdata.eu/)).
+
+It is built on these open source projects:
+
+- [Oxigraph](https://github.com/oxigraph/oxigraph)'s `oxrdf`, `oxttl` and
+  `oxrdfxml` crates for RDF parsing, serialisation and canonicalisation
+  (MIT / Apache-2.0)
+- [axum](https://github.com/tokio-rs/axum) and [Tokio](https://tokio.rs) for
+  the web viewer's server (MIT)
+- [clap](https://github.com/clap-rs/clap) for the command line (MIT / Apache-2.0)
+- [Tabulator](https://tabulator.info) for the viewer's table (MIT)
+- [Leaflet](https://leafletjs.com) for the map (BSD-2-Clause), with
+  [wellknown](https://github.com/mapbox/wellknown) to parse WKT (WTFPL)
+- Map tiles from [OpenStreetMap](https://www.openstreetmap.org/copyright),
+  © OpenStreetMap contributors
+
+The full list, with license texts, is in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). The web viewer shows it at
+`/licenses` and links to it from its About dialog.
+
 ## License
 
-Apache-2.0.
+Licensed under the [Apache License 2.0](LICENSE).
