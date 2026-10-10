@@ -83,6 +83,7 @@ mod tests {
             graph_a: None,
             graph_b: None,
             ignore_blank_nodes: false,
+            normalization: Default::default(),
         }
     }
 

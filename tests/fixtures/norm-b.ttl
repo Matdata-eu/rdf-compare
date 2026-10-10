@@ -1,0 +1,12 @@
+@prefix ex: <http://example.org/> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+@prefix geo: <http://www.opengis.net/ont/geosparql#> .
+
+ex:x ex:count "7"^^xsd:integer ;
+    ex:price "12.5"^^xsd:decimal ;
+    ex:ratio "1.0E0"^^xsd:double ;
+    ex:active "true"^^xsd:boolean ;
+    ex:at "2024-01-02T03:04:05Z"^^xsd:dateTime ;
+    ex:label "Hello"@en ;
+    ex:name "New name" ;
+    ex:geom "POINT(4.35172 50.85034)"^^geo:wktLiteral .
