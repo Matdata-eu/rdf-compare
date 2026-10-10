@@ -44,6 +44,10 @@ pub struct Totals {
     pub added: u64,
     /// Triples present in A but not in B.
     pub removed: u64,
+    /// Removed/added pairs that give a property of a subject a new value
+    /// (same subject and predicate). Each is also counted in `added` and
+    /// `removed`.
+    pub changed: u64,
     pub a_skipped_bnodes: u64,
     pub b_skipped_bnodes: u64,
 }
@@ -69,6 +73,8 @@ pub struct PredicateStats {
     pub predicate: String,
     pub added: u64,
     pub removed: u64,
+    /// Changed values (removed/added pairs) for this predicate.
+    pub changed: u64,
     /// `None` for a saved diff file.
     pub a_total: Option<u64>,
     pub b_total: Option<u64>,
@@ -169,7 +175,14 @@ impl SummaryBuilder {
         }
     }
 
-    pub fn finish(mut self, stats: &DiffStats, a_only: &[Quad], b_only: &[Quad]) -> DiffSummary {
+    /// `changes` are the `(a_only, b_only)` index pairs of changed values.
+    pub fn finish(
+        mut self,
+        stats: &DiffStats,
+        a_only: &[Quad],
+        b_only: &[Quad],
+        changes: &[(usize, usize)],
+    ) -> DiffSummary {
         if !self.full {
             for q in a_only.iter().chain(b_only) {
                 self.observe_type(&q.subject, &q.predicate, &q.object);
@@ -193,6 +206,11 @@ impl SummaryBuilder {
                     bump(instances.entry(c).or_default());
                 }
             }
+        }
+
+        let mut pred_changed: HashMap<&NamedNode, u64> = HashMap::new();
+        for &(ai, _) in changes {
+            *pred_changed.entry(&a_only[ai].predicate).or_default() += 1;
         }
 
         let status_of = |s: &NamedOrBlankNode| -> Option<SubjectStatus> {
@@ -268,6 +286,7 @@ impl SummaryBuilder {
                     predicate: p.as_str().to_string(),
                     added,
                     removed,
+                    changed: pred_changed.get(*p).copied().unwrap_or(0),
                     a_total: totals.map(|t| t.0),
                     b_total: totals.map(|t| t.1),
                     common: totals.map(|t| t.2),
@@ -303,6 +322,7 @@ impl SummaryBuilder {
                 common: self.full.then_some(stats.common),
                 added: b_only.len() as u64,
                 removed: a_only.len() as u64,
+                changed: changes.len() as u64,
                 a_skipped_bnodes: stats.a_skipped_bnodes,
                 b_skipped_bnodes: stats.b_skipped_bnodes,
             },

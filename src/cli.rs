@@ -1,3 +1,4 @@
+use crate::normalize::Normalization;
 use anyhow::{Result, anyhow, bail};
 use clap::{Args as ClapArgs, Parser, Subcommand, ValueEnum};
 use std::path::{Path, PathBuf};
@@ -83,6 +84,17 @@ pub struct Args {
     /// used to assign stable labels before diffing.
     #[arg(long = "ignore-blank-nodes")]
     pub ignore_blank_nodes: bool,
+
+    /// Compare literals by their canonical form: numbers, booleans and
+    /// date/times are rewritten to their canonical lexical form, language
+    /// tags are lower-cased and WKT spacing is normalised. The diff shows
+    /// the normalised values.
+    #[arg(long = "normalize-literals")]
+    pub normalize_literals: bool,
+
+    /// Round WKT coordinates to this many decimals before comparing.
+    #[arg(long = "wkt-precision", value_name = "DECIMALS")]
+    pub wkt_precision: Option<u8>,
 }
 
 /// Arguments accepted by `rdf-compare serve`.
@@ -127,6 +139,35 @@ pub struct ServeArgs {
     /// Skip blank-node-bearing triples instead of canonicalising them.
     #[arg(long = "ignore-blank-nodes")]
     pub ignore_blank_nodes: bool,
+
+    /// Compare literals by their canonical form: numbers, booleans and
+    /// date/times are rewritten to their canonical lexical form, language
+    /// tags are lower-cased and WKT spacing is normalised. The diff shows
+    /// the normalised values.
+    #[arg(long = "normalize-literals")]
+    pub normalize_literals: bool,
+
+    /// Round WKT coordinates to this many decimals before comparing.
+    #[arg(long = "wkt-precision", value_name = "DECIMALS")]
+    pub wkt_precision: Option<u8>,
+}
+
+impl Args {
+    pub fn normalization(&self) -> Normalization {
+        Normalization {
+            literals: self.normalize_literals,
+            wkt_precision: self.wkt_precision,
+        }
+    }
+}
+
+impl ServeArgs {
+    pub fn normalization(&self) -> Normalization {
+        Normalization {
+            literals: self.normalize_literals,
+            wkt_precision: self.wkt_precision,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]

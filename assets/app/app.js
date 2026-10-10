@@ -6,6 +6,8 @@
     meta: null,
     diffLoaded: false,
     commonLoaded: false,
+    diffRows: [], // rows from the server; changed values are single `~` rows
+    commonRows: [],
     wktSelection: new Set(), // wkt literal strings currently shown on the map
     classFilter: null, // { key, subjects: Set } when the table is filtered on a class
   };
@@ -22,6 +24,9 @@
     pathB: document.getElementById("path-b"),
     pathDiff: document.getElementById("path-diff"),
     loaderMsg: document.getElementById("loader-msg"),
+    optNormalize: document.getElementById("opt-normalize"),
+    optWktPrecision: document.getElementById("opt-wkt-precision"),
+    groupChanges: document.getElementById("group-changes"),
     overlay: document.getElementById("loading-overlay"),
     overlayMsg: document.getElementById("loading-msg"),
     commonError: document.getElementById("common-error"),
@@ -35,7 +40,16 @@
 
   // The diff shown is named by the page URL (?a=…&b=… or ?diff=…), so a
   // link opens the same diff for anyone and each tab can show its own.
-  const SOURCE_PARAMS = ["a", "b", "diff", "graph_a", "graph_b", "ignore_blank_nodes"];
+  const SOURCE_PARAMS = [
+    "a",
+    "b",
+    "diff",
+    "graph_a",
+    "graph_b",
+    "ignore_blank_nodes",
+    "normalize_literals",
+    "wkt_precision",
+  ];
   const pageParams = new URLSearchParams(window.location.search);
   const sourceParams = new URLSearchParams();
   for (const k of SOURCE_PARAMS) {
@@ -105,6 +119,7 @@
     const a = row.getData().a;
     if (a === "+") return "row-added";
     if (a === "-") return "row-deleted";
+    if (a === "~") return "row-changed";
     return "row-common";
   }
 
@@ -114,24 +129,38 @@
     const nameB = escapeHtml((state.meta && state.meta.graph_b) || "B");
     if (v === "+") return `<span class="badge added" title="Triple present in ${nameB} but not in ${nameA}">+</span>`;
     if (v === "-") return `<span class="badge deleted" title="Triple present in ${nameA} but not in ${nameB}">−</span>`;
+    if (v === "~") return `<span class="badge changed" title="Value changed from ${nameA} to ${nameB}">~</span>`;
     return '<span class="badge common" title="Present in both">=</span>';
   }
 
   function iriFormatter(cell) {
     return renderIri(cell.getValue());
   }
+  // WKT values a cell puts on the map: the new and, for a change, the old one.
+  function cellWkts(data) {
+    if (!window.MapWidget) return [];
+    return [data.o, data.old].filter((o) => window.MapWidget.isWkt(o)).map((o) => o.v);
+  }
+
   function objectFormatter(cell) {
     const o = cell.getValue();
-    if (window.MapWidget && window.MapWidget.isWkt(o)) {
-      const el = cell.getElement();
-      el.classList.add("wkt-cell");
-      if (state.wktSelection.has(o.v)) {
+    const data = cell.getRow().getData();
+    const el = cell.getElement();
+    const wkts = cellWkts(data);
+    el.classList.toggle("wkt-cell", wkts.length > 0);
+    if (wkts.length) {
+      if (state.wktSelection.has(wkts[0])) {
         el.classList.add("wkt-cell--active");
         el.title = "Click to remove from map";
       } else {
         el.classList.remove("wkt-cell--active");
         el.title = "Click to add to map";
       }
+    } else {
+      el.classList.remove("wkt-cell--active");
+    }
+    if (data.a === "~" && data.old) {
+      return `<span class="old-value">${renderObject(data.old)}</span><span class="change-arrow">→</span>${renderObject(o)}`;
     }
     return renderObject(o);
   }
@@ -151,16 +180,20 @@
     return short ? short.toLowerCase().includes(lc) : false;
   }
 
-  function objectFilter(headerValue, _rowValue, rowData) {
-    if (!headerValue) return true;
-    const o = rowData.o;
+  function objectMatches(o, lc) {
     if (!o) return false;
-    if (o.v.toLowerCase().includes(headerValue.toLowerCase())) return true;
+    if (o.v.toLowerCase().includes(lc)) return true;
     if (o.t === "iri") {
       const short = shortenIri(o.v);
-      if (short && short.toLowerCase().includes(headerValue.toLowerCase())) return true;
+      if (short && short.toLowerCase().includes(lc)) return true;
     }
     return false;
+  }
+
+  function objectFilter(headerValue, _rowValue, rowData) {
+    if (!headerValue) return true;
+    const lc = headerValue.toLowerCase();
+    return objectMatches(rowData.o, lc) || objectMatches(rowData.old, lc);
   }
 
   function buildTable() {
@@ -185,7 +218,9 @@
           field: "a",
           width: 90,
           headerFilter: "list",
-          headerFilterParams: { values: { "": "All", "+": "+ Added", "-": "− Deleted", "=": "= Common" } },
+          headerFilterParams: {
+            values: { "": "All", "+": "+ Added", "-": "− Deleted", "~": "~ Changed", "=": "= Common" },
+          },
           formatter: actionFormatter,
         },
         { title: "Subject", field: "s", headerFilter: "input", headerFilterFunc: iriFilter, formatter: iriFormatter },
@@ -209,15 +244,15 @@
       try {
         const row = state.table.getRow(rowEl);
         if (!row) return;
-        const o = row.getData().o;
-        if (!window.MapWidget || !window.MapWidget.isWkt(o)) return;
+        const wkts = cellWkts(row.getData());
+        if (!wkts.length) return;
         e.preventDefault();
-        if (state.wktSelection.has(o.v)) {
-          state.wktSelection.delete(o.v);
+        if (state.wktSelection.has(wkts[0])) {
+          for (const w of wkts) state.wktSelection.delete(w);
           cellEl.classList.remove("wkt-cell--active");
           cellEl.title = "Click to add to map";
         } else {
-          state.wktSelection.add(o.v);
+          for (const w of wkts) state.wktSelection.add(w);
           cellEl.classList.add("wkt-cell--active");
           cellEl.title = "Click to remove from map";
         }
@@ -290,13 +325,24 @@
       `A=${nameA} (${s.a_total ?? "?"} triples)` +
       ` · B=${nameB} (${s.b_total ?? "?"})` +
       ` · <span class="count-added">+${s.b_only ?? 0}</span>` +
-      ` <span class="count-removed">−${s.a_only ?? 0}</span>`;
+      ` <span class="count-removed">−${s.a_only ?? 0}</span>` +
+      ` <span class="count-changed" title="Changed values (each also counts as one added and one removed triple)">~${s.changed ?? 0}</span>` +
+      normalizationNote();
     const legendAdded = document.getElementById("legend-added");
     const legendDeleted = document.getElementById("legend-deleted");
     const rawA = state.meta.graph_a || "A";
     const rawB = state.meta.graph_b || "B";
     if (legendAdded) legendAdded.title = `Triple present in ${rawB} but not in ${rawA}`;
     if (legendDeleted) legendDeleted.title = `Triple present in ${rawA} but not in ${rawB}`;
+  }
+
+  function normalizationNote() {
+    const parts = [];
+    if (state.meta.normalize_literals) parts.push("literals normalised");
+    if (state.meta.wkt_precision !== null && state.meta.wkt_precision !== undefined) {
+      parts.push(`WKT rounded to ${state.meta.wkt_precision} decimals`);
+    }
+    return parts.length ? ` · <span title="Values are compared and shown in canonical form">${parts.join(", ")}</span>` : "";
   }
 
   function fmt(n) {
@@ -368,7 +414,13 @@
       card("common", fmt(t.common), "common"),
       card("added", `+${fmt(t.added)}`, "added", "Triples present in B but not in A"),
       card("removed", `−${fmt(t.removed)}`, "removed", "Triples present in A but not in B"),
-      card("changed", fmt(changed), "", `Added + removed${pct}`),
+      card("differences", fmt(changed), "", `Added + removed${pct}`),
+      card(
+        "changed values",
+        `~${fmt(t.changed)}`,
+        "changed",
+        "Same subject and predicate with a new value; each also counts as one added and one removed triple",
+      ),
       card("subjects affected", fmt(sub.affected), "", `Out of ${fmt(sub.a_total)} subjects in A and ${fmt(sub.b_total)} in B`),
       card("new subjects", fmt(sub.added), "added", "Subjects that only occur in B"),
       card("removed subjects", fmt(sub.removed), "removed", "Subjects that only occur in A"),
@@ -377,13 +429,14 @@
 
     const predMax = Math.max(1, ...sum.predicates.map((p) => p.added + p.removed));
     els.summaryPredicates.innerHTML =
-      `<thead><tr><th>Predicate</th><th class="num">+</th><th class="num">−</th><th class="num">=</th><th></th></tr></thead><tbody>` +
+      `<thead><tr><th>Predicate</th><th class="num">+</th><th class="num">−</th><th class="num" title="Changed values">~</th><th class="num">=</th><th></th></tr></thead><tbody>` +
       sum.predicates
         .map(
           (p) =>
             `<tr class="clickable" data-filter-field="p" data-filter-value="${escapeHtml(p.predicate)}">` +
             `<td>${renderIriText(p.predicate)}</td>` +
             `<td class="num added">${fmt(p.added)}</td><td class="num removed">${fmt(p.removed)}</td>` +
+            `<td class="num changed">${fmt(p.changed)}</td>` +
             `<td class="num muted">${fmt(p.common)}</td>` +
             `<td class="bar-cell">${changeBar(p.added, p.removed, predMax)}</td></tr>`,
         )
@@ -440,21 +493,36 @@
     renderSummary(await resp.json());
   }
 
+  // With "Group changes" off, a changed row is shown as the removed and the
+  // added triple it stands for.
+  function visibleDiffRows() {
+    if (els.groupChanges.checked) return state.diffRows;
+    const out = [];
+    for (const r of state.diffRows) {
+      if (r.a === "~") {
+        out.push({ a: "-", s: r.s, p: r.p, o: r.old });
+        out.push({ a: "+", s: r.s, p: r.p, o: r.o });
+      } else {
+        out.push(r);
+      }
+    }
+    return out;
+  }
+
+  async function refreshTableData() {
+    const rows = visibleDiffRows().concat(state.commonRows);
+    els.overlayMsg.textContent = `Rendering ${rows.length.toLocaleString()} rows\u2026`;
+    await new Promise((r) => setTimeout(r, 0));
+    await state.table.setData(rows);
+  }
+
   async function loadDiffRows() {
     if (state.diffLoaded) return;
     showLoading("Loading diff rows\u2026");
     try {
-      const rows = await streamRows(apiUrl("/api/rows", { include: "diff" }), null);
-      if (rows.length > 0) {
-        els.overlayMsg.textContent = `Rendering ${rows.length.toLocaleString()} rows\u2026`;
-        await new Promise(r => setTimeout(r, 0));
-        if (state.commonLoaded) {
-          await state.table.addData(rows);
-        } else {
-          await state.table.setData(rows);
-        }
-      }
+      state.diffRows = await streamRows(apiUrl("/api/rows", { include: "diff" }), null);
       state.diffLoaded = true;
+      await refreshTableData();
     } finally {
       hideLoading();
     }
@@ -464,17 +532,9 @@
     if (state.commonLoaded) return;
     showLoading("Loading common rows\u2026");
     try {
-      const rows = await streamRows(apiUrl("/api/rows", { include: "common" }), "=");
-      if (rows.length > 0) {
-        els.overlayMsg.textContent = `Rendering ${rows.length.toLocaleString()} rows\u2026`;
-        await new Promise(r => setTimeout(r, 0));
-        if (state.diffLoaded) {
-          await state.table.addData(rows);
-        } else {
-          await state.table.setData(rows);
-        }
-      }
+      state.commonRows = await streamRows(apiUrl("/api/rows", { include: "common" }), "=");
       state.commonLoaded = true;
+      await refreshTableData();
     } finally {
       hideLoading();
     }
@@ -491,6 +551,8 @@
       state.table.addFilter("a", "=", "+");
     } else if (mode === "only-removed") {
       state.table.addFilter("a", "=", "-");
+    } else if (mode === "only-changed") {
+      state.table.addFilter("a", "=", "~");
     }
     // "diff-and-common" → no additional filter
   }
@@ -554,6 +616,8 @@
     els.pathA.value = sourceParams.get("a") || "";
     els.pathB.value = sourceParams.get("b") || "";
     els.pathDiff.value = sourceParams.get("diff") || "";
+    els.optNormalize.checked = sourceParams.get("normalize_literals") === "true";
+    els.optWktPrecision.value = sourceParams.get("wkt_precision") || "";
     if (sourceParams.toString()) showLoading("Computing diff\u2026");
     let meta;
     try {
@@ -619,11 +683,34 @@
       els.loaderMsg.textContent = "Enter both file paths, or a diff file.";
       return;
     }
+    // Normalisation only applies when diffing source files.
+    if (!diff) {
+      if (els.optNormalize.checked) q.set("normalize_literals", "true");
+      const precision = els.optWktPrecision.value.trim();
+      if (precision) q.set("wkt_precision", precision);
+    }
     window.location.search = q.toString();
   });
 
   els.tripleView.addEventListener("change", () => {
     applyViewMode(els.tripleView.value);
+  });
+
+  els.groupChanges.addEventListener("change", async () => {
+    // Without grouping there are no `~` rows to show.
+    for (const opt of els.tripleView.options) {
+      if (opt.value === "only-changed") opt.disabled = !els.groupChanges.checked;
+    }
+    if (!els.groupChanges.checked && els.tripleView.value === "only-changed") {
+      els.tripleView.value = "only-diff";
+    }
+    showLoading("Updating rows\u2026");
+    try {
+      await refreshTableData();
+      applyViewFilter(els.tripleView.value);
+    } finally {
+      hideLoading();
+    }
   });
 
   init().catch((e) => {

@@ -4,6 +4,7 @@ use super::{AppState, assets};
 use crate::diff::{
     DiffInputs, DiffResult, LoadDiffInputs, compute_diff, load_diff_file, stream_common_triples,
 };
+use crate::normalize::Normalization;
 use axum::Json;
 use axum::Router;
 use axum::body::Body;
@@ -56,6 +57,7 @@ struct StatsDto {
     b_total: u64,
     a_only: u64,
     b_only: u64,
+    changed: u64,
     common: u64,
     a_skipped_bnodes: u64,
     b_skipped_bnodes: u64,
@@ -70,6 +72,8 @@ struct MetaDto {
     graph_b: Option<String>,
     stats: Option<StatsDto>,
     prefixes: Vec<(String, String)>,
+    normalize_literals: bool,
+    wkt_precision: Option<u8>,
 }
 
 async fn meta(State(s): State<AppState>, Query(src): Query<SourceQuery>) -> Response {
@@ -86,6 +90,8 @@ async fn meta(State(s): State<AppState>, Query(src): Query<SourceQuery>) -> Resp
             graph_b: None,
             stats: None,
             prefixes: vec![],
+            normalize_literals: false,
+            wkt_precision: None,
         }),
         Some(d) => Json(MetaDto {
             version: env!("CARGO_PKG_VERSION"),
@@ -98,11 +104,14 @@ async fn meta(State(s): State<AppState>, Query(src): Query<SourceQuery>) -> Resp
                 b_total: d.stats.b_total,
                 a_only: d.stats.a_only,
                 b_only: d.stats.b_only,
+                changed: d.stats.changed,
                 common: d.stats.common,
                 a_skipped_bnodes: d.stats.a_skipped_bnodes,
                 b_skipped_bnodes: d.stats.b_skipped_bnodes,
             }),
             prefixes: d.prefixes.clone(),
+            normalize_literals: d.normalization.literals,
+            wkt_precision: d.normalization.wkt_precision,
         }),
     }
     .into_response()
@@ -168,15 +177,13 @@ struct RowDto<'a> {
     s: String,
     p: &'a str,
     o: ObjectDto<'a>,
+    /// Previous value of a changed (`~`) row; `o` holds the new one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    old: Option<ObjectDto<'a>>,
 }
 
-fn write_row<W: std::io::Write>(w: &mut W, action: &str, q: &Quad) -> std::io::Result<()> {
-    let s = match &q.subject {
-        oxrdf::NamedOrBlankNode::NamedNode(n) => n.as_str().to_string(),
-        oxrdf::NamedOrBlankNode::BlankNode(b) => format!("_:{}", b.as_str()),
-    };
-    let p = q.predicate.as_str();
-    let obj = match &q.object {
+fn object_dto(t: &Term) -> ObjectDto<'_> {
+    match t {
         Term::NamedNode(n) => ObjectDto {
             t: "iri",
             v: n.as_str(),
@@ -210,27 +217,67 @@ fn write_row<W: std::io::Write>(w: &mut W, action: &str, q: &Quad) -> std::io::R
             dt: None,
             lng: None,
         },
+    }
+}
+
+fn write_row<W: std::io::Write>(
+    w: &mut W,
+    action: &str,
+    q: &Quad,
+    old: Option<&Term>,
+) -> std::io::Result<()> {
+    let s = match &q.subject {
+        oxrdf::NamedOrBlankNode::NamedNode(n) => n.as_str().to_string(),
+        oxrdf::NamedOrBlankNode::BlankNode(b) => format!("_:{}", b.as_str()),
     };
     let row = RowDto {
         a: action,
         s,
-        p,
-        o: obj,
+        p: q.predicate.as_str(),
+        o: object_dto(&q.object),
+        old: old.map(object_dto),
     };
     serde_json::to_writer(&mut *w, &row)?;
     w.write_all(b"\n")
 }
 
-/// Render NDJSON for the in-memory diff (added + deleted triples).
+/// Emit one NDJSON line per diff row: changed values (`~`, one row per
+/// removed/added pair), then the remaining added (`+`) and deleted (`-`)
+/// triples. Stops early when `emit` returns false.
+fn diff_rows(data: &DiffResult, mut emit: impl FnMut(Vec<u8>) -> bool) {
+    let mut a_paired = vec![false; data.a_only.len()];
+    let mut b_pair: Vec<Option<usize>> = vec![None; data.b_only.len()];
+    for &(ai, bi) in &data.changes {
+        a_paired[ai] = true;
+        b_pair[bi] = Some(ai);
+    }
+    for (q, pair) in data.b_only.iter().zip(&b_pair) {
+        let mut buf = Vec::with_capacity(256);
+        let _ = match pair {
+            Some(ai) => write_row(&mut buf, "~", q, Some(&data.a_only[*ai].object)),
+            None => write_row(&mut buf, "+", q, None),
+        };
+        if !emit(buf) {
+            return;
+        }
+    }
+    for (q, _) in data.a_only.iter().zip(&a_paired).filter(|(_, p)| !**p) {
+        let mut buf = Vec::with_capacity(256);
+        let _ = write_row(&mut buf, "-", q, None);
+        if !emit(buf) {
+            return;
+        }
+    }
+}
+
+/// Render NDJSON for the in-memory diff (changed, added and deleted rows).
 pub fn render_diff_ndjson(data: &DiffResult) -> Vec<u8> {
-    let mut buf = Vec::with_capacity(256 * 1024);
-    for t in &data.b_only {
-        let _ = write_row(&mut buf, "+", t);
-    }
-    for t in &data.a_only {
-        let _ = write_row(&mut buf, "-", t);
-    }
-    buf
+    let mut out = Vec::with_capacity(256 * 1024);
+    diff_rows(data, |b| {
+        out.extend_from_slice(&b);
+        true
+    });
+    out
 }
 
 async fn rows(
@@ -251,20 +298,7 @@ async fn rows(
         "diff" => {
             let (tx, rx) = tokio::sync::mpsc::channel::<Vec<u8>>(128);
             tokio::task::spawn_blocking(move || {
-                for t in &data.b_only {
-                    let mut buf = Vec::with_capacity(256);
-                    let _ = write_row(&mut buf, "+", t);
-                    if tx.blocking_send(buf).is_err() {
-                        return;
-                    }
-                }
-                for t in &data.a_only {
-                    let mut buf = Vec::with_capacity(256);
-                    let _ = write_row(&mut buf, "-", t);
-                    if tx.blocking_send(buf).is_err() {
-                        return;
-                    }
-                }
+                diff_rows(&data, |buf| tx.blocking_send(buf).is_ok());
             });
             let stream = ReceiverStream::new(rx)
                 .map(|b| Result::<_, std::io::Error>::Ok(axum::body::Bytes::from(b)));
@@ -286,14 +320,15 @@ async fn rows(
                 let fmt_a = data.format_a;
                 let fmt_b = data.format_b;
                 let mut buf = Vec::with_capacity(256 * 1024);
-                stream_common_triples(&file_a, &file_b, fmt_a, fmt_b, |t| {
+                let norm = data.normalization;
+                stream_common_triples(&file_a, &file_b, fmt_a, fmt_b, norm, |t| {
                     let q = Quad {
                         subject: t.subject.clone(),
                         predicate: t.predicate.clone(),
                         object: t.object.clone(),
                         graph_name: oxrdf::GraphName::DefaultGraph,
                     };
-                    write_row(&mut buf, "=", &q).map_err(anyhow::Error::from)?;
+                    write_row(&mut buf, "=", &q, None).map_err(anyhow::Error::from)?;
                     Ok(())
                 })?;
                 Ok(buf)
@@ -332,6 +367,10 @@ pub struct SourceQuery {
     graph_b: Option<String>,
     #[serde(default)]
     ignore_blank_nodes: bool,
+    #[serde(default)]
+    normalize_literals: bool,
+    #[serde(default)]
+    wkt_precision: Option<u8>,
 }
 
 /// Identifies a file's content for cache purposes: path, size and mtime.
@@ -355,9 +394,13 @@ async fn diff_for(
     let bad = |e: anyhow::Error| (StatusCode::BAD_REQUEST, format!("{e:#}"));
     let root = s.data_dir.as_deref().map(PathBuf::as_path);
     let resolve = |p: &Path| resolve_in_data_dir(root, p).map_err(bad);
+    let normalization = Normalization {
+        literals: src.normalize_literals,
+        wkt_precision: src.wkt_precision,
+    };
     let opts = format!(
-        "{:?}|{:?}|{}",
-        src.graph_a, src.graph_b, src.ignore_blank_nodes
+        "{:?}|{:?}|{}|{:?}",
+        src.graph_a, src.graph_b, src.ignore_blank_nodes, normalization
     );
     let (key, compute): (
         String,
@@ -390,6 +433,7 @@ async fn diff_for(
                 graph_a: src.graph_a,
                 graph_b: src.graph_b,
                 ignore_blank_nodes: src.ignore_blank_nodes,
+                normalization,
             };
             (key, Box::new(move || compute_diff(&inputs)))
         }
@@ -530,19 +574,58 @@ mod tests {
             graph_a: None,
             graph_b: None,
             ignore_blank_nodes: false,
+            normalization: Normalization::default(),
         };
         let d = compute_diff(&inputs).unwrap();
         let bytes = render_diff_ndjson(&d);
         let s = std::str::from_utf8(&bytes).unwrap();
         let lines: Vec<&str> = s.lines().collect();
-        assert_eq!(lines.len() as u64, d.stats.a_only + d.stats.b_only);
+        assert_eq!(
+            lines.len() as u64,
+            d.stats.a_only + d.stats.b_only - d.stats.changed
+        );
         for line in lines {
             let v: serde_json::Value = serde_json::from_str(line).unwrap();
-            assert!(matches!(v["a"].as_str(), Some("+") | Some("-")));
+            assert!(matches!(v["a"].as_str(), Some("+") | Some("-") | Some("~")));
             assert!(v["s"].is_string());
             assert!(v["p"].is_string());
             assert!(v["o"].is_object());
         }
+    }
+
+    #[test]
+    fn ndjson_merges_changed_values_into_one_row() {
+        let inputs = DiffInputs {
+            file_a: fixtures("summary-a.ttl"),
+            file_b: fixtures("summary-b.ttl"),
+            format_a: None,
+            format_b: None,
+            graph_a: None,
+            graph_b: None,
+            ignore_blank_nodes: false,
+            normalization: Normalization::default(),
+        };
+        let mut d = compute_diff(&inputs).unwrap();
+        d.sort_rows();
+        let bytes = render_diff_ndjson(&d);
+        let rows: Vec<serde_json::Value> = std::str::from_utf8(&bytes)
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        // ex:alice age 30→31 is one `~` row instead of a `-` and a `+` row.
+        assert_eq!(d.stats.changed, 1);
+        assert_eq!(rows.len() as u64, d.stats.a_only + d.stats.b_only - 1);
+        let changed: Vec<&serde_json::Value> = rows.iter().filter(|r| r["a"] == "~").collect();
+        assert_eq!(changed.len(), 1);
+        assert_eq!(changed[0]["s"], "http://example.org/alice");
+        assert_eq!(changed[0]["old"]["v"], "30");
+        assert_eq!(changed[0]["o"]["v"], "31");
+        assert!(
+            rows.iter()
+                .filter(|r| r["a"] != "~")
+                .all(|r| r.get("old").is_none())
+        );
     }
 
     #[test]
@@ -555,6 +638,7 @@ mod tests {
             graph_a: None,
             graph_b: None,
             ignore_blank_nodes: false,
+            normalization: Normalization::default(),
         };
         let d = compute_diff(&inputs).unwrap();
         let cs = &d.summary.class_subjects;

@@ -1,11 +1,12 @@
 use crate::cli::{InputFormat, OutputFormat};
 use crate::graph_iri::resolve_graph_iris;
 use crate::input::{is_quad_format, open_reader, parse_quads, parse_triples, quad_to_triple};
+use crate::normalize::Normalization;
 use crate::stats::{DiffSummary, SummaryBuilder};
 use anyhow::{Context, Result, bail};
 use oxrdf::dataset::CanonicalizationAlgorithm;
-use oxrdf::{Dataset, GraphName, NamedNode, NamedOrBlankNode, Quad, Triple};
-use std::collections::HashSet;
+use oxrdf::{Dataset, GraphName, NamedNode, NamedOrBlankNode, Quad, Term, Triple};
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::fs::File;
 use std::io::{BufWriter, Write, stdout};
@@ -18,6 +19,9 @@ pub struct DiffStats {
     pub common: u64,
     pub a_only: u64,
     pub b_only: u64,
+    /// Removed/added pairs that share subject and predicate (see
+    /// [`find_changes`]). Each pair is also counted in `a_only` and `b_only`.
+    pub changed: u64,
     pub a_skipped_bnodes: u64,
     pub b_skipped_bnodes: u64,
 }
@@ -41,6 +45,12 @@ impl DiffStats {
 pub struct DiffResult {
     pub a_only: Vec<Quad>,
     pub b_only: Vec<Quad>,
+    /// Changed values: `(index into a_only, index into b_only)` pairs, as
+    /// found by [`find_changes`]. Recomputed by [`DiffResult::sort_rows`].
+    pub changes: Vec<(usize, usize)>,
+    /// Literal normalisation applied to both inputs, reused when the viewer
+    /// streams the common triples.
+    pub normalization: Normalization,
     /// Merged prefix declarations from A and B. A wins on conflicts.
     pub prefixes: Vec<(String, String)>,
     pub graph_a: NamedNode,
@@ -84,6 +94,7 @@ impl DiffResult {
     pub fn sort_rows(&mut self) {
         self.a_only.sort_unstable_by(quad_order);
         self.b_only.sort_unstable_by(quad_order);
+        self.changes = find_changes(&self.a_only, &self.b_only, self.quad_mode);
     }
 
     pub fn a_only_triples(&self) -> impl Iterator<Item = Triple> + '_ {
@@ -106,6 +117,7 @@ pub struct DiffInputs {
     /// When true, blank-node-bearing statements are skipped instead of
     /// canonicalised via RDFC-1.0.
     pub ignore_blank_nodes: bool,
+    pub normalization: Normalization,
 }
 
 #[derive(Debug, Clone)]
@@ -221,6 +233,51 @@ fn canonicalize_quads(quads: Vec<Quad>) -> Vec<Quad> {
     dataset.iter().map(Quad::from).collect()
 }
 
+/// Pair removed and added statements that describe a new value for the same
+/// property: same subject and predicate (and named graph in quad mode), and
+/// for language-tagged objects the same language. A pair is only formed when
+/// exactly one statement was removed and one added for that key, so
+/// multi-valued properties with several changes stay as separate rows.
+///
+/// Returns `(index into a_only, index into b_only)` pairs, ordered by the
+/// `a_only` index.
+pub fn find_changes(a_only: &[Quad], b_only: &[Quad], quad_mode: bool) -> Vec<(usize, usize)> {
+    type Key<'a> = (
+        Option<&'a GraphName>,
+        &'a NamedOrBlankNode,
+        &'a NamedNode,
+        Option<&'a str>,
+    );
+    fn key(q: &Quad, quad_mode: bool) -> Key<'_> {
+        let lang = match &q.object {
+            Term::Literal(l) => l.language(),
+            _ => None,
+        };
+        (
+            quad_mode.then_some(&q.graph_name),
+            &q.subject,
+            &q.predicate,
+            lang,
+        )
+    }
+    // (count, last index) per side.
+    let mut groups: HashMap<Key<'_>, [(u32, usize); 2]> = HashMap::new();
+    for (side, quads) in [a_only, b_only].into_iter().enumerate() {
+        for (i, q) in quads.iter().enumerate() {
+            let e = &mut groups.entry(key(q, quad_mode)).or_default()[side];
+            e.0 += 1;
+            e.1 = i;
+        }
+    }
+    let mut pairs: Vec<(usize, usize)> = groups
+        .into_values()
+        .filter(|[a, b]| a.0 == 1 && b.0 == 1)
+        .map(|[a, b]| (a.1, b.1))
+        .collect();
+    pairs.sort_unstable();
+    pairs
+}
+
 pub fn compute_diff(inputs: &DiffInputs) -> Result<DiffResult> {
     let fmt_a = detect_or_override(&inputs.file_a, inputs.format_a)?;
     let fmt_b = detect_or_override(&inputs.file_b, inputs.format_b)?;
@@ -239,8 +296,9 @@ pub fn compute_diff(inputs: &DiffInputs) -> Result<DiffResult> {
 
     let mut quads_a: Vec<Quad> = Vec::new();
     let reader_a = open_reader(&inputs.file_a)?;
+    let norm = inputs.normalization;
     let outcome_a = parse_quads(reader_a, fmt_a, |q| {
-        quads_a.push(q);
+        quads_a.push(norm.quad(q));
         Ok(())
     })
     .with_context(|| format!("while parsing {}", inputs.file_a.display()))?;
@@ -248,7 +306,7 @@ pub fn compute_diff(inputs: &DiffInputs) -> Result<DiffResult> {
     let mut quads_b: Vec<Quad> = Vec::new();
     let reader_b = open_reader(&inputs.file_b)?;
     let outcome_b = parse_quads(reader_b, fmt_b, |q| {
-        quads_b.push(q);
+        quads_b.push(norm.quad(q));
         Ok(())
     })
     .with_context(|| format!("while parsing {}", inputs.file_b.display()))?;
@@ -303,6 +361,7 @@ pub fn compute_diff(inputs: &DiffInputs) -> Result<DiffResult> {
     let a_only_count = a_only.len() as u64;
     let b_only_count = b_only.len() as u64;
     let common = a_total.saturating_sub(a_only_count);
+    let changes = find_changes(&a_only, &b_only, quad_mode);
 
     let stats = DiffStats {
         a_total,
@@ -310,14 +369,17 @@ pub fn compute_diff(inputs: &DiffInputs) -> Result<DiffResult> {
         common,
         a_only: a_only_count,
         b_only: b_only_count,
+        changed: changes.len() as u64,
         a_skipped_bnodes: 0,
         b_skipped_bnodes: 0,
     };
-    let summary = summary.finish(&stats, &a_only, &b_only);
+    let summary = summary.finish(&stats, &a_only, &b_only, &changes);
 
     Ok(DiffResult {
         a_only,
         b_only,
+        changes,
+        normalization: norm,
         prefixes,
         graph_a,
         graph_b,
@@ -341,8 +403,10 @@ fn compute_diff_skip_bnodes(
 ) -> Result<DiffResult> {
     let mut summary = SummaryBuilder::new();
     let mut set: HashSet<Triple> = HashSet::new();
+    let norm = inputs.normalization;
     let reader_a = open_reader(&inputs.file_a)?;
     let outcome_a = parse_triples(reader_a, fmt_a, |t| {
+        let t = norm.triple(t);
         summary.observe_a(&t.subject, &t.predicate, &t.object);
         set.insert(t);
         Ok(())
@@ -352,6 +416,7 @@ fn compute_diff_skip_bnodes(
     let mut b_only_triples: Vec<Triple> = Vec::new();
     let reader_b = open_reader(&inputs.file_b)?;
     let outcome_b = parse_triples(reader_b, fmt_b, |t| {
+        let t = norm.triple(t);
         summary.observe_b(&t.subject, &t.predicate, &t.object);
         if !set.remove(&t) {
             b_only_triples.push(t);
@@ -377,6 +442,7 @@ fn compute_diff_skip_bnodes(
         .into_iter()
         .map(|t| make_quad(t, &g_b))
         .collect();
+    let changes = find_changes(&a_only, &b_only, quad_mode);
 
     let stats = DiffStats {
         a_total: outcome_a.total,
@@ -384,14 +450,17 @@ fn compute_diff_skip_bnodes(
         common,
         a_only: a_only_count,
         b_only: b_only_count,
+        changed: changes.len() as u64,
         a_skipped_bnodes: outcome_a.skipped,
         b_skipped_bnodes: outcome_b.skipped,
     };
-    let summary = summary.finish(&stats, &a_only, &b_only);
+    let summary = summary.finish(&stats, &a_only, &b_only, &changes);
 
     Ok(DiffResult {
         a_only,
         b_only,
+        changes,
+        normalization: norm,
         prefixes,
         graph_a: graph_a.clone(),
         graph_b: graph_b.clone(),
@@ -482,6 +551,7 @@ pub fn run_diff(args: &crate::cli::Args) -> Result<DiffStats> {
         graph_a: args.graph_a.clone(),
         graph_b: args.graph_b.clone(),
         ignore_blank_nodes: args.ignore_blank_nodes,
+        normalization: args.normalization(),
     };
     let result = compute_diff(&inputs)?;
     write_diff(&result, args.output.as_deref(), args.output_format)?;
@@ -497,6 +567,7 @@ pub fn stream_common_triples<F: FnMut(&Triple) -> Result<()>>(
     file_b: &Path,
     format_a: Option<InputFormat>,
     format_b: Option<InputFormat>,
+    normalization: Normalization,
     mut on_triple: F,
 ) -> Result<()> {
     let fmt_a = detect_or_override(file_a, format_a)?;
@@ -505,13 +576,14 @@ pub fn stream_common_triples<F: FnMut(&Triple) -> Result<()>>(
     let mut set: HashSet<Triple> = HashSet::new();
     let reader_a = open_reader(file_a)?;
     parse_triples(reader_a, fmt_a, |t| {
-        set.insert(t);
+        set.insert(normalization.triple(t));
         Ok(())
     })
     .with_context(|| format!("while parsing {}", file_a.display()))?;
 
     let reader_b = open_reader(file_b)?;
     parse_triples(reader_b, fmt_b, |t| {
+        let t = normalization.triple(t);
         if set.contains(&t) {
             on_triple(&t)?;
         }
@@ -589,20 +661,24 @@ pub fn load_diff_file(inputs: &LoadDiffInputs) -> Result<DiffResult> {
         }
     }
 
+    let changes = find_changes(&a_only, &b_only, false);
     let stats = DiffStats {
         a_total: a_only.len() as u64,
         b_total: b_only.len() as u64,
         common: 0,
         a_only: a_only.len() as u64,
         b_only: b_only.len() as u64,
+        changed: changes.len() as u64,
         a_skipped_bnodes: 0,
         b_skipped_bnodes: 0,
     };
-    let summary = SummaryBuilder::from_diff_only().finish(&stats, &a_only, &b_only);
+    let summary = SummaryBuilder::from_diff_only().finish(&stats, &a_only, &b_only, &changes);
 
     Ok(DiffResult {
         a_only,
         b_only,
+        changes,
+        normalization: Normalization::default(),
         prefixes,
         graph_a,
         graph_b,
@@ -640,6 +716,7 @@ mod tests {
             graph_a: None,
             graph_b: None,
             ignore_blank_nodes: false,
+            normalization: Normalization::default(),
         };
         let computed = compute_diff(&inputs).unwrap();
 
@@ -661,5 +738,42 @@ mod tests {
         let loaded_b: HashSet<Triple> = loaded.b_only_triples().collect();
         assert_eq!(computed_a, loaded_a);
         assert_eq!(computed_b, loaded_b);
+    }
+
+    fn q(s: &str, p: &str, o: Term) -> Quad {
+        Quad::new(
+            NamedNode::new_unchecked(s),
+            NamedNode::new_unchecked(p),
+            o,
+            GraphName::DefaultGraph,
+        )
+    }
+
+    #[test]
+    fn find_changes_pairs_single_value_changes_only() {
+        use oxrdf::Literal;
+        let lit = |v: &str| Term::Literal(Literal::new_simple_literal(v));
+        let lang =
+            |v: &str, l: &str| Term::Literal(Literal::new_language_tagged_literal_unchecked(v, l));
+        let a_only = vec![
+            q("ex:s", "ex:name", lit("old")),
+            q("ex:s", "ex:tag", lit("t1")),
+            q("ex:s", "ex:tag", lit("t2")),
+            q("ex:s", "ex:label", lang("Hallo", "nl")),
+            q("ex:s", "ex:label", lang("Hello", "en")),
+            q("ex:gone", "ex:name", lit("x")),
+        ];
+        let b_only = vec![
+            q("ex:s", "ex:label", lang("Hi", "en")),
+            q("ex:s", "ex:tag", lit("t3")),
+            q("ex:s", "ex:name", lit("new")),
+            q("ex:s", "ex:label", lang("Dag", "nl")),
+        ];
+        // name: 1→1 pairs; tag: 2 removed, 1 added does not; labels pair
+        // per language; ex:gone has no added counterpart.
+        assert_eq!(
+            find_changes(&a_only, &b_only, false),
+            vec![(0, 2), (3, 3), (4, 0)]
+        );
     }
 }

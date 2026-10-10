@@ -48,6 +48,7 @@ fn run_default(args: Args) -> ExitCode {
         graph_a: args.graph_a.clone(),
         graph_b: args.graph_b.clone(),
         ignore_blank_nodes: args.ignore_blank_nodes,
+        normalization: args.normalization(),
     };
     match compute_diff(&inputs).and_then(|r| {
         write_diff(&r, args.output.as_deref(), args.output_format)?;
@@ -84,6 +85,7 @@ fn run_view(args: Args) -> ExitCode {
         graph_a: args.graph_a.clone(),
         graph_b: args.graph_b.clone(),
         ignore_blank_nodes: args.ignore_blank_nodes,
+        normalization: args.normalization(),
     };
     let result = match compute_diff(&inputs) {
         Ok(r) => r,
@@ -125,6 +127,7 @@ fn run_view(args: Args) -> ExitCode {
 }
 
 fn run_serve(s: ServeArgs) -> ExitCode {
+    let normalization = s.normalization();
     let preload = if let Some(diff) = s.diff {
         Preload::Diff {
             diff,
@@ -141,6 +144,7 @@ fn run_serve(s: ServeArgs) -> ExitCode {
             graph_a: s.graph_a,
             graph_b: s.graph_b,
             ignore_blank_nodes: s.ignore_blank_nodes,
+            normalization,
         }
     } else {
         Preload::None
@@ -175,6 +179,6 @@ fn print_summary(args: &Args, s: &DiffStats, elapsed: std::time::Duration) {
         s.b_only,
         s.b_skipped_bnodes
     );
-    eprintln!("common={}", s.common);
+    eprintln!("common={}  changed={}", s.common, s.changed);
     eprintln!("total-time={:.3}s", elapsed.as_secs_f64());
 }
