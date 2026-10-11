@@ -1,0 +1,53 @@
+publiccodeYmlVersion: '0'
+name: rdf-compare
+url: https://github.com/Matdata-eu/rdf-compare
+landingURL: https://matdata-eu.github.io/rdf-compare/
+softwareVersion: 1.5.0
+releaseDate: '2026-10-08'
+platforms:
+- linux
+- windows
+- mac
+- web
+categories:
+- data-analytics
+- knowledge-management
+- it-development
+developmentStatus: stable
+softwareType: standalone/other
+organisation:
+  uri: https://matdata.eu
+  name: Matdata
+intendedAudience:
+  scope:
+  - government
+  - science-and-technology
+  - infrastructures
+  - transportation
+description:
+  en:
+    shortDescription: Fast CLI that diffs two RDF files into an RDF dataset and shows the difference in
+      a web view.
+    longDescription: |
+      rdf-compare is a fast command-line tool that computes the difference between two RDF files. Its output is itself RDF: a TriG or N-Quads dataset with one named graph for the triples only in the first file and one for the triples only in the second.
+
+      It reads the common RDF formats, also gzipped, handles blank nodes and named graphs, and streams the second file to keep memory use low. A CI mode fails a build when the files differ. A built-in web viewer shows the difference with filtering per class, which helps when reviewing a new release of a published dataset.
+    documentation: https://matdata-eu.github.io/rdf-compare/
+    features:
+    - Diff of two RDF files as an RDF dataset
+    - Turtle, N-Triples, N-Quads, TriG, RDF/XML and gzip input
+    - Blank-node and named-graph aware
+    - CI mode that fails on differences
+    - Web viewer with per-class filtering
+legal:
+  license: Apache-2.0
+  mainCopyrightOwner: Matdata
+maintenance:
+  type: internal
+  contacts:
+  - name: Mathias Vanden Auweele
+    affiliation: Matdata
+localisation:
+  localisationReady: false
+  availableLanguages:
+  - en
